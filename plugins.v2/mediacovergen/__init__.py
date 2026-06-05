@@ -32,18 +32,18 @@ from app.schemas.types import EventType
 from app.schemas import ServiceInfo
 from app.utils.http import RequestUtils
 from app.utils.url import UrlUtils
-from app.plugins.mediacovergenerator.style.style_static_1 import create_style_static_1
-from app.plugins.mediacovergenerator.style.style_static_2 import create_style_static_2
-from app.plugins.mediacovergenerator.style.style_static_3  import create_style_static_3
-from app.plugins.mediacovergenerator.style.style_static_4 import create_style_static_4
-from app.plugins.mediacovergenerator.style.style_animated_1 import create_style_animated_1
-from app.plugins.mediacovergenerator.style.style_animated_2 import create_style_animated_2
-from app.plugins.mediacovergenerator.style.style_animated_3 import create_style_animated_3
-from app.plugins.mediacovergenerator.style.style_animated_4 import create_style_animated_4
-from app.plugins.mediacovergenerator.utils.image_manager import ResolutionConfig, ImageResourceManager
-from app.plugins.mediacovergenerator.utils.network_helper import NetworkHelper, validate_font_file
-from app.plugins.mediacovergenerator.utils.performance_helper import PerformanceMonitor, ProgressTracker, memory_efficient_operation
-from app.plugins.mediacovergenerator.utils.color_helper import ColorHelper
+from app.plugins.mediacovergen.style.style_static_1 import create_style_static_1
+from app.plugins.mediacovergen.style.style_static_2 import create_style_static_2
+from app.plugins.mediacovergen.style.style_static_3  import create_style_static_3
+from app.plugins.mediacovergen.style.style_static_4 import create_style_static_4
+from app.plugins.mediacovergen.style.style_animated_1 import create_style_animated_1
+from app.plugins.mediacovergen.style.style_animated_2 import create_style_animated_2
+from app.plugins.mediacovergen.style.style_animated_3 import create_style_animated_3
+from app.plugins.mediacovergen.style.style_animated_4 import create_style_animated_4
+from app.plugins.mediacovergen.utils.image_manager import ResolutionConfig, ImageResourceManager
+from app.plugins.mediacovergen.utils.network_helper import NetworkHelper, validate_font_file
+from app.plugins.mediacovergen.utils.performance_helper import PerformanceMonitor, ProgressTracker, memory_efficient_operation
+from app.plugins.mediacovergen.utils.color_helper import ColorHelper
 
 
 class MediaCoverGen(_PluginBase):
@@ -54,7 +54,7 @@ class MediaCoverGen(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/emby.png"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     # 插件作者
     plugin_author = "sucooer"
     # 作者主页

@@ -10,13 +10,13 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from app.log import logger
-from app.plugins.mediacovergenerator.style.style_static_2 import (
+from app.plugins.mediacovergen.style.style_static_2 import (
     add_film_grain,
     align_image_right,
     darken_color,
     find_dominant_vibrant_colors,
 )
-from app.plugins.mediacovergenerator.utils.color_helper import ColorHelper
+from app.plugins.mediacovergen.utils.color_helper import ColorHelper
 
 
 def _clamp(v, lo, hi):
