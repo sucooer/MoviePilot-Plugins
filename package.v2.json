@@ -37,13 +37,14 @@
     "name": "FFprobe分析",
     "description": "ffprobe 媒体分析，补全 videoFormat、videoCodec、videoBit、audioCodec、fps、effect，支持 AList 文件重命名",
     "labels": "ffprobe,分析,AList",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "icon": "ffmpeg.png",
     "author": "sucooer",
     "level": 1,
     "release": true,
     "system_version": ">=2.12.0",
     "history": {
+      "v0.2.2": "兼容重命名确认接口的 POST JSON body 参数，并补充 AList 重命名日志。",
       "v0.2.1": "重构重命名表单，使用 Vuetify 组件替换原生 HTML 表单，修复显示与提交问题。",
       "v0.2.0": "适配 OpenList(AList) 文件管理场景，支持通过直链探测媒体信息并补全命名字段。"
     }

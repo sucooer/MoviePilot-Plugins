@@ -6,6 +6,8 @@ from subprocess import TimeoutExpired, run
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 
+from fastapi import Body
+
 from app import schemas
 from app.core.cache import TTLCache
 from app.core.config import settings
@@ -28,7 +30,7 @@ class FFprobeAnalysis(_PluginBase):
     plugin_name = "FFprobe分析"
     plugin_desc = "整理重命名时调用 ffprobe，补全命名模板中的 videoFormat、videoCodec、videoBit、audioCodec、fps、effect，支持 STRM 与 OpenList"
     plugin_icon = "ffmpeg.png"
-    plugin_version = "0.2.1"
+    plugin_version = "0.2.2"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "ffprobeanalysis_"
@@ -309,18 +311,25 @@ class FFprobeAnalysis(_PluginBase):
         self.save_data("alist_current_path", path)
         return self.api_alist_list(path)
 
-    def api_alist_rename(self, path: str = "", new_name: str = "") -> schemas.Response:
+    def api_alist_rename(
+        self,
+        payload: Optional[dict] = Body(default=None),
+        path: Optional[str] = "",
+        new_name: Optional[str] = "",
+    ) -> schemas.Response:
         """
         API：重命名 AList 文件
         """
+        payload = payload if isinstance(payload, dict) else {}
         last_result = self.get_data("last_analysis") or {}
-        path = str(path or last_result.get("path") or "").strip()
-        new_name = str(new_name or "").strip()
+        path = str(path or payload.get("path") or last_result.get("path") or "").strip()
+        new_name = str(new_name or payload.get("new_name") or payload.get("name") or "").strip()
         if new_name == "{{new_name}}":
             new_name = ""
         if not new_name and path == str(last_result.get("path") or "").strip():
             new_name = str(last_result.get("suggested") or "").strip()
         if not path or not new_name:
+            logger.warning("【FFprobe分析】AList 重命名缺少参数: path=%s, new_name=%s", path, new_name)
             return schemas.Response(success=False, message="缺少路径或新文件名")
         parts = [p for p in path.split("/") if p]
         clean_path = "/" + "/".join(parts) if parts else "/"
@@ -333,6 +342,7 @@ class FFprobeAnalysis(_PluginBase):
         if not base_url or not headers:
             return schemas.Response(success=False, message="OpenList 认证失败")
 
+        logger.info("【FFprobe分析】AList 重命名: %s -> %s", clean_path, new_name)
         resp = RequestUtils(headers=headers).post_res(
             UrlUtils.adapt_request_url(base_url, "/api/fs/rename"),
             json={"path": clean_path, "name": new_name},
@@ -344,6 +354,7 @@ class FFprobeAnalysis(_PluginBase):
         except Exception as e:
             return schemas.Response(success=False, message=f"解析响应失败: {e}")
         if result.get("code") != 200:
+            logger.warning("【FFprobe分析】AList 重命名失败: %s", result.get("message"))
             return schemas.Response(success=False, message=f"重命名失败: {result.get('message')}")
 
         dir_path = clean_path.rsplit("/", 1)[0] or "/"
@@ -358,19 +369,37 @@ class FFprobeAnalysis(_PluginBase):
         self.save_data("last_analysis", None)
         return schemas.Response(success=True, message="已取消重命名", data={})
 
-    def api_alist_rename_once(self, path: str = "", new_name: str = "", nonce: str = "") -> schemas.Response:
+    def api_alist_rename_once(
+        self,
+        payload: Optional[dict] = Body(default=None),
+        path: Optional[str] = "",
+        new_name: Optional[str] = "",
+        nonce: Optional[str] = "",
+    ) -> schemas.Response:
         """
         API：使用最近一次分析结果的一次性令牌重命名 AList 文件
         """
+        payload = payload if isinstance(payload, dict) else {}
+        path = str(path or payload.get("path") or "").strip()
+        new_name = str(new_name or payload.get("new_name") or payload.get("name") or "").strip()
+        nonce = str(nonce or payload.get("nonce") or "").strip()
         valid, message, clean_path = self._validate_last_analysis_nonce(path, nonce)
         if not valid:
             return schemas.Response(success=False, message=message)
         return self.api_alist_rename(path=clean_path, new_name=new_name)
 
-    def api_clear_analysis_once(self, path: str = "", nonce: str = "") -> schemas.Response:
+    def api_clear_analysis_once(
+        self,
+        payload: Optional[dict] = Body(default=None),
+        path: Optional[str] = "",
+        nonce: Optional[str] = "",
+    ) -> schemas.Response:
         """
         API：使用最近一次分析结果的一次性令牌清除分析结果
         """
+        payload = payload if isinstance(payload, dict) else {}
+        path = str(path or payload.get("path") or "").strip()
+        nonce = str(nonce or payload.get("nonce") or "").strip()
         valid, message, _ = self._validate_last_analysis_nonce(path, nonce)
         if not valid:
             return schemas.Response(success=False, message=message)
@@ -597,6 +626,11 @@ class FFprobeAnalysis(_PluginBase):
             f"path={quote(str(last_result.get('path') or ''))}"
             f"&nonce={quote(str(last_result.get('nonce') or ''))}"
         )
+        rename_api = (
+            f"plugin/FFprobeAnalysis/alist_rename_once?"
+            f"path={quote(str(last_result.get('path') or ''))}"
+            f"&nonce={quote(str(last_result.get('nonce') or ''))}"
+        )
 
         dirs = [f for f in files if f.get("is_dir")]
         file_items = [f for f in files if not f.get("is_dir")]
@@ -784,12 +818,8 @@ class FFprobeAnalysis(_PluginBase):
                                                                 "text": "确认重命名",
                                                                 "events": {
                                                                     "click": {
-                                                                        "api": "plugin/FFprobeAnalysis/alist_rename_once",
+                                                                        "api": rename_api,
                                                                         "method": "post",
-                                                                        "params": {
-                                                                            "path": last_result["path"],
-                                                                            "nonce": last_result.get("nonce", ""),
-                                                                        }
                                                                     }
                                                                 }
                                                             },
