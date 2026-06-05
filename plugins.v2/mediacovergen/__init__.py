@@ -46,7 +46,7 @@ from app.plugins.mediacovergenerator.utils.performance_helper import Performance
 from app.plugins.mediacovergenerator.utils.color_helper import ColorHelper
 
 
-class MediaCoverGenerator(_PluginBase):
+class MediaCoverGen(_PluginBase):
     # 插件名称
     plugin_name = "Emby媒体库封面生成"
     # 插件描述
@@ -60,7 +60,7 @@ class MediaCoverGenerator(_PluginBase):
     # 作者主页
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     # 插件配置项ID前缀
-    plugin_config_prefix = "mediacovergenerator_"
+    plugin_config_prefix = "mediacovergen_"
     # 加载顺序
     plugin_order = 2
     # 可使用的用户级别
@@ -713,24 +713,24 @@ class MediaCoverGenerator(_PluginBase):
 
     def api_clean_images(self):
         try:
-            logger.info("【MediaCoverGenerator】收到立即清理图片缓存请求")
+            logger.info("【MediaCoverGen】收到立即清理图片缓存请求")
             self.__clean_generated_images()
             self._clean_images = False
             self.__update_config()
             return {"code": 0, "msg": "图片缓存清理完成"}
         except Exception as e:
-            logger.error(f"【MediaCoverGenerator】立即清理图片失败: {e}", exc_info=True)
+            logger.error(f"【MediaCoverGen】立即清理图片失败: {e}", exc_info=True)
             return {"code": 1, "msg": f"图片缓存清理失败: {e}"}
 
     def api_clean_fonts(self):
         try:
-            logger.info("【MediaCoverGenerator】收到立即清理字体缓存请求")
+            logger.info("【MediaCoverGen】收到立即清理字体缓存请求")
             self.__clean_downloaded_fonts()
             self._clean_fonts = False
             self.__update_config()
             return {"code": 0, "msg": "字体缓存清理完成"}
         except Exception as e:
-            logger.error(f"【MediaCoverGenerator】立即清理字体失败: {e}", exc_info=True)
+            logger.error(f"【MediaCoverGen】立即清理字体失败: {e}", exc_info=True)
             return {"code": 1, "msg": f"字体缓存清理失败: {e}"}
 
     def api_delete_saved_cover(self, file: str = ""):
@@ -741,10 +741,10 @@ class MediaCoverGenerator(_PluginBase):
             if not target_file.exists() or not target_file.is_file():
                 return {"code": 1, "msg": "文件不存在"}
             target_file.unlink(missing_ok=True)
-            logger.info(f"【MediaCoverGenerator】已删除封面文件: {target_file}")
+            logger.info(f"【MediaCoverGen】已删除封面文件: {target_file}")
             return {"code": 0, "msg": "封面文件删除成功"}
         except Exception as e:
-            logger.error(f"【MediaCoverGenerator】删除封面文件失败: {e}", exc_info=True)
+            logger.error(f"【MediaCoverGen】删除封面文件失败: {e}", exc_info=True)
             return {"code": 1, "msg": f"封面文件删除失败: {e}"}
 
     def api_apply_saved_cover(self, file: str = ""):
@@ -771,26 +771,26 @@ class MediaCoverGenerator(_PluginBase):
             if not image_base64:
                 return {"code": 1, "msg": "读取历史封面文件失败"}
 
-            logger.info(f"【MediaCoverGenerator】准备将历史封面设为当前封面: {target_file}")
+            logger.info(f"【MediaCoverGen】准备将历史封面设为当前封面: {target_file}")
             if self.__set_library_image(service, library, image_base64):
-                logger.info(f"【MediaCoverGenerator】已将历史封面设为当前封面: {target_file}")
+                logger.info(f"【MediaCoverGen】已将历史封面设为当前封面: {target_file}")
                 return {"code": 0, "msg": "历史封面已设为当前封面"}
             return {"code": 1, "msg": "设置当前封面失败，请查看日志"}
         except Exception as e:
-            logger.error(f"【MediaCoverGenerator】设为当前封面失败: {e}", exc_info=True)
+            logger.error(f"【MediaCoverGen】设为当前封面失败: {e}", exc_info=True)
             return {"code": 1, "msg": f"设为当前封面失败: {e}"}
 
     def api_generate_now(self, style: str = ""):
         old_style = self._cover_style
         try:
             if not self._enabled:
-                logger.warning("【MediaCoverGenerator】立即生成失败：插件未启用，请先在设置页启用插件并保存")
+                logger.warning("【MediaCoverGen】立即生成失败：插件未启用，请先在设置页启用插件并保存")
                 return {"code": 1, "msg": "插件未启用，请先在设置页启用插件并保存"}
             if not self._selected_servers:
-                logger.warning("【MediaCoverGenerator】立即生成失败：未勾选媒体服务器，请先在设置页勾选服务器并保存")
+                logger.warning("【MediaCoverGen】立即生成失败：未勾选媒体服务器，请先在设置页勾选服务器并保存")
                 return {"code": 1, "msg": "未勾选媒体服务器，请先在设置页勾选服务器并保存"}
             if not self._servers:
-                logger.warning("【MediaCoverGenerator】立即生成失败：服务器连接信息为空，请检查设置并保存后重试")
+                logger.warning("【MediaCoverGen】立即生成失败：服务器连接信息为空，请检查设置并保存后重试")
                 return {"code": 1, "msg": "服务器连接信息为空，请检查设置并保存后重试"}
 
             target_style = (style or "").strip()
@@ -802,11 +802,11 @@ class MediaCoverGenerator(_PluginBase):
                 if target_style not in allowed_styles:
                     return {"code": 1, "msg": f"不支持的风格: {target_style}"}
                 self._cover_style = target_style
-            logger.info(f"【MediaCoverGenerator】收到立即生成请求，风格: {self._cover_style}")
+            logger.info(f"【MediaCoverGen】收到立即生成请求，风格: {self._cover_style}")
             tips = self.__update_all_libraries()
             return {"code": 0, "msg": tips or "封面生成任务已完成"}
         except Exception as e:
-            logger.error(f"【MediaCoverGenerator】立即生成失败: {e}", exc_info=True)
+            logger.error(f"【MediaCoverGen】立即生成失败: {e}", exc_info=True)
             return {"code": 1, "msg": f"封面生成失败: {e}"}
         finally:
             self._cover_style = old_style
@@ -825,10 +825,10 @@ class MediaCoverGenerator(_PluginBase):
             self._cover_style_base = base
             self._cover_style_variant = variant
             self.__update_config()
-            logger.info(f"【MediaCoverGenerator】已保存封面风格: {target_style}")
+            logger.info(f"【MediaCoverGen】已保存封面风格: {target_style}")
             return {"code": 0, "msg": f"已保存风格: {target_style}"}
         except Exception as e:
-            logger.error(f"【MediaCoverGenerator】保存封面风格失败: {e}", exc_info=True)
+            logger.error(f"【MediaCoverGen】保存封面风格失败: {e}", exc_info=True)
             return {"code": 1, "msg": f"保存风格失败: {e}"}
 
     def __get_cover_style_parts(self) -> Tuple[str, int]:
@@ -849,7 +849,7 @@ class MediaCoverGenerator(_PluginBase):
         self._cover_style_base = f"static_{safe_index}"
         self._cover_style_variant = safe_variant
         self.__update_config()
-        logger.info(f"【MediaCoverGenerator】已保存封面风格: {target_style}")
+        logger.info(f"【MediaCoverGen】已保存封面风格: {target_style}")
 
     def api_toggle_style_variant(self):
         try:
@@ -858,7 +858,7 @@ class MediaCoverGenerator(_PluginBase):
             self.__set_cover_style_parts(new_variant, index)
             return {"code": 0, "msg": f"已切换为{new_variant}风格{index}"}
         except Exception as e:
-            logger.error(f"【MediaCoverGenerator】切换静态/动态失败: {e}", exc_info=True)
+            logger.error(f"【MediaCoverGen】切换静态/动态失败: {e}", exc_info=True)
             return {"code": 1, "msg": f"切换失败: {e}"}
 
     def __api_select_style(self, index: int):
@@ -867,7 +867,7 @@ class MediaCoverGenerator(_PluginBase):
             self.__set_cover_style_parts(variant, index)
             return {"code": 0, "msg": f"已选择{variant}风格{index}"}
         except Exception as e:
-            logger.error(f"【MediaCoverGenerator】选择风格失败: {e}", exc_info=True)
+            logger.error(f"【MediaCoverGen】选择风格失败: {e}", exc_info=True)
             return {"code": 1, "msg": f"选择风格失败: {e}"}
 
     def api_select_style_1(self):
@@ -884,7 +884,7 @@ class MediaCoverGenerator(_PluginBase):
 
     def __set_page_tab(self, tab: str):
         self._page_tab = tab if tab in ["generate-tab", "history-tab", "clean-tab"] else "generate-tab"
-        logger.info(f"【MediaCoverGenerator】已切换页面Tab: {self._page_tab}")
+        logger.info(f"【MediaCoverGen】已切换页面Tab: {self._page_tab}")
 
     def api_set_page_tab_generate(self):
         self.__set_page_tab("generate-tab")
@@ -913,7 +913,7 @@ class MediaCoverGenerator(_PluginBase):
                 from starlette.responses import FileResponse
                 return FileResponse(path=str(target_file), media_type=mime_type)
             except Exception as e:
-                logger.error(f"【MediaCoverGenerator】返回图片失败: {e}")
+                logger.error(f"【MediaCoverGen】返回图片失败: {e}")
                 return {"code": 1, "msg": "返回图片失败"}
 
     def get_service(self) -> List[Dict[str, Any]]:
@@ -923,7 +923,7 @@ class MediaCoverGenerator(_PluginBase):
         services = []
         if self._enabled and self._cron:
             services.append({
-                "id": "MediaCoverGenerator",
+                "id": "MediaCoverGen",
                 "name": "媒体库封面更新服务",
                 "trigger": CronTrigger.from_crontab(self._cron),
                 "func": self.__update_all_libraries,
@@ -932,7 +932,7 @@ class MediaCoverGenerator(_PluginBase):
         
         # 总是显示停止按钮，以便中断长时间运行的任务
         services.append({
-            "id": "StopMediaCoverGenerator",
+            "id": "StopMediaCoverGen",
             "name": "停止当前更新任务",
             "trigger": None,
             "func": self.stop_task,
@@ -2288,8 +2288,8 @@ class MediaCoverGenerator(_PluginBase):
             recent_covers = self.__get_recent_generated_covers(limit=limit)
             if recent_covers:
                 for item in recent_covers:
-                    delete_api = f"plugin/MediaCoverGenerator/delete_saved_cover?file={quote(item['path'])}"
-                    apply_api = f"plugin/MediaCoverGenerator/apply_saved_cover?file={quote(item['path'])}"
+                    delete_api = f"plugin/MediaCoverGen/delete_saved_cover?file={quote(item['path'])}"
+                    apply_api = f"plugin/MediaCoverGen/apply_saved_cover?file={quote(item['path'])}"
                     cover_rows.append(
                         {
                             "component": "VCol",
@@ -2415,19 +2415,19 @@ class MediaCoverGenerator(_PluginBase):
                                 "component": "VTab",
                                 "props": {"value": "generate-tab"},
                                 "text": "封面生成",
-                                "events": {"click": {"api": "plugin/MediaCoverGenerator/set_page_tab_generate", "method": "post"}},
+                                "events": {"click": {"api": "plugin/MediaCoverGen/set_page_tab_generate", "method": "post"}},
                             },
                             {
                                 "component": "VTab",
                                 "props": {"value": "history-tab"},
                                 "text": "历史封面",
-                                "events": {"click": {"api": "plugin/MediaCoverGenerator/set_page_tab_history", "method": "post"}},
+                                "events": {"click": {"api": "plugin/MediaCoverGen/set_page_tab_history", "method": "post"}},
                             },
                             {
                                 "component": "VTab",
                                 "props": {"value": "clean-tab"},
                                 "text": "清理缓存",
-                                "events": {"click": {"api": "plugin/MediaCoverGenerator/set_page_tab_clean", "method": "post"}},
+                                "events": {"click": {"api": "plugin/MediaCoverGen/set_page_tab_clean", "method": "post"}},
                             },
                         ],
                     },
@@ -2474,7 +2474,7 @@ class MediaCoverGenerator(_PluginBase):
                                                                     "prepend-icon": "mdi-swap-horizontal",
                                                                 },
                                                     "text": f"切换到{'动态' if style_variant == 'static' else '静态'}",
-                                                    "events": {"click": {"api": "plugin/MediaCoverGenerator/toggle_style_variant", "method": "post"}},
+                                                    "events": {"click": {"api": "plugin/MediaCoverGen/toggle_style_variant", "method": "post"}},
                                                 },
                                                             {
                                                                 "component": "VBtn",
@@ -2485,7 +2485,7 @@ class MediaCoverGenerator(_PluginBase):
                                                                     "prepend-icon": "mdi-play-circle-outline",
                                                                 },
                                                     "text": "立即生成当前风格",
-                                                    "events": {"click": {"api": "plugin/MediaCoverGenerator/generate_now", "method": "post"}},
+                                                    "events": {"click": {"api": "plugin/MediaCoverGen/generate_now", "method": "post"}},
                                                 },
                                                 {
                                                     "component": "div",
@@ -2529,7 +2529,7 @@ class MediaCoverGenerator(_PluginBase):
                                                                     "prepend-icon": "mdi-swap-horizontal",
                                                                 },
                                                     "text": f"切换到{'动态' if style_variant == 'static' else '静态'}",
-                                                    "events": {"click": {"api": "plugin/MediaCoverGenerator/toggle_style_variant", "method": "post"}},
+                                                    "events": {"click": {"api": "plugin/MediaCoverGen/toggle_style_variant", "method": "post"}},
                                                 },
                                                             {
                                                                 "component": "VBtn",
@@ -2540,7 +2540,7 @@ class MediaCoverGenerator(_PluginBase):
                                                                     "prepend-icon": "mdi-play-circle-outline",
                                                                 },
                                                     "text": "立即生成当前风格",
-                                                    "events": {"click": {"api": "plugin/MediaCoverGenerator/generate_now", "method": "post"}},
+                                                    "events": {"click": {"api": "plugin/MediaCoverGen/generate_now", "method": "post"}},
                                                 }
                                             ],
                                         }
@@ -2584,7 +2584,7 @@ class MediaCoverGenerator(_PluginBase):
                                                     "class": "mb-3 text-none",
                                                 },
                                     "text": "立即清理图片缓存",
-                                    "events": {"click": {"api": "plugin/MediaCoverGenerator/clean_images", "method": "post"}},
+                                    "events": {"click": {"api": "plugin/MediaCoverGen/clean_images", "method": "post"}},
                                 },
                                             {
                                                 "component": "VBtn",
@@ -2596,7 +2596,7 @@ class MediaCoverGenerator(_PluginBase):
                                                     "class": "mb-3 text-none",
                                                 },
                                     "text": "立即清理字体缓存",
-                                    "events": {"click": {"api": "plugin/MediaCoverGenerator/clean_fonts", "method": "post"}},
+                                    "events": {"click": {"api": "plugin/MediaCoverGen/clean_fonts", "method": "post"}},
                                 },
                                 {
                                     "component": "div",
@@ -2633,7 +2633,7 @@ class MediaCoverGenerator(_PluginBase):
                             },
                             "events": {
                                 "click": {
-                                    "api": f"plugin/MediaCoverGenerator/select_style_{style['index']}",
+                                    "api": f"plugin/MediaCoverGen/select_style_{style['index']}",
                                     "method": "post",
                                 }
                             },

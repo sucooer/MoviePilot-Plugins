@@ -36,7 +36,7 @@ class NetworkHelper:
         self.session = aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,
-            headers={'User-Agent': 'MoviePilot-MediaCoverGenerator/1.0'},
+            headers={'User-Agent': 'MoviePilot-MediaCoverGen/1.0'},
             trust_env=True
         )
         return self
@@ -121,7 +121,7 @@ class NetworkHelper:
                     response = requests.get(
                         url,
                         timeout=self.timeout,
-                        headers={'User-Agent': 'MoviePilot-MediaCoverGenerator/1.0'},
+                        headers={'User-Agent': 'MoviePilot-MediaCoverGen/1.0'},
                         stream=True,
                         verify=verify_ssl
                     )
@@ -131,7 +131,7 @@ class NetworkHelper:
                     response = requests.get(
                         url,
                         timeout=self.timeout,
-                        headers={'User-Agent': 'MoviePilot-MediaCoverGenerator/1.0'},
+                        headers={'User-Agent': 'MoviePilot-MediaCoverGen/1.0'},
                         stream=True,
                         verify=verify_ssl
                     )
