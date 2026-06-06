@@ -1,3 +1,4 @@
+import hashlib
 import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,7 +26,7 @@ class OpenListStrmRefresh(_PluginBase):
     plugin_name = "OpenList STRM 刷新"
     plugin_desc = "定时访问 OpenList STRM 驱动目录，触发 STRM 文件生成。"
     plugin_icon = "Alist_B.png"
-    plugin_version = "0.1.2"
+    plugin_version = "0.1.5"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openliststrmrefresh_"
@@ -40,6 +41,7 @@ class OpenListStrmRefresh(_PluginBase):
     _default_frequency = "daily_3"
     _paths = ""
     _schedules = ""
+    _change_schedules = ""
     _recursive = True
     _max_depth = 3
     _per_page = 0
@@ -51,6 +53,7 @@ class OpenListStrmRefresh(_PluginBase):
     _running = False
 
     STORE_LAST_RESULT_KEY = "last_result"
+    STORE_SNAPSHOT_KEY = "directory_snapshots"
 
     def init_plugin(self, config: dict = None):
         self.stop_service()
@@ -62,6 +65,7 @@ class OpenListStrmRefresh(_PluginBase):
         self._default_frequency = str(config.get("default_frequency") or "daily_3").strip()
         self._paths = str(config.get("paths") or "").strip()
         self._schedules = str(config.get("schedules") or "").strip()
+        self._change_schedules = str(config.get("change_schedules") or "").strip()
         self._recursive = bool(config.get("recursive", True))
         self._refresh = bool(config.get("refresh", False))
         self._max_depth = self._to_int(config.get("max_depth"), 3, 0, 20)
@@ -119,17 +123,36 @@ class OpenListStrmRefresh(_PluginBase):
 
         schedules = self._parse_schedules(self._schedules)
         for index, schedule in enumerate(schedules, start=1):
+            paths = list(schedule["paths"])
+            schedule_name = f"计划 {index}"
             services.append(
                 {
                     "id": f"OpenListStrmRefresh{index}",
                     "name": f"OpenList STRM 刷新 {index}",
                     "trigger": CronTrigger.from_crontab(schedule["cron"]),
-                    "func": self.refresh_paths,
-                    "kwargs": {"paths": schedule["paths"], "schedule_name": f"计划 {index}"},
+                    "func": lambda paths=paths, schedule_name=schedule_name: self.refresh_paths(
+                        paths, schedule_name
+                    ),
+                    "kwargs": {},
+                }
+            )
+        change_schedules = self._parse_change_schedules(self._change_schedules)
+        for index, schedule in enumerate(change_schedules, start=1):
+            detect_schedule = dict(schedule)
+            schedule_name = f"变化检测 {index}"
+            services.append(
+                {
+                    "id": f"OpenListStrmDetect{index}",
+                    "name": f"OpenList STRM 变化检测 {index}",
+                    "trigger": CronTrigger.from_crontab(schedule["cron"]),
+                    "func": lambda schedule=detect_schedule, schedule_name=schedule_name: self.detect_changes(
+                        schedule, schedule_name
+                    ),
+                    "kwargs": {},
                 }
             )
         default_cron = self._resolve_frequency(self._default_frequency) or self._cron
-        if not schedules and default_cron and self._parse_paths(self._paths):
+        if not schedules and not change_schedules and default_cron and self._parse_paths(self._paths):
             services.append(
                 {
                     "id": "OpenListStrmRefresh",
@@ -143,6 +166,9 @@ class OpenListStrmRefresh(_PluginBase):
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         frequency_items = [
+            {"title": "每 15 分钟", "value": "every_15_minutes"},
+            {"title": "每 30 分钟", "value": "every_30_minutes"},
+            {"title": "每小时", "value": "hourly"},
             {"title": "每天 03:00", "value": "daily_3"},
             {"title": "每 6 小时", "value": "every_6_hours"},
             {"title": "每 12 小时", "value": "every_12_hours"},
@@ -335,6 +361,28 @@ class OpenListStrmRefresh(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "change_schedules",
+                                            "label": "变化检测计划",
+                                            "placeholder": "每15分钟 | /原驱动/电影 -> /strm/电影\n每30分钟 | /原驱动/剧集 -> /strm/剧集",
+                                            "rows": 6,
+                                            "hint": "检测左侧源目录变化，变化后刷新右侧 STRM 目录；首次检测只建立基线",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
                         "component": "VAlert",
                         "props": {
                             "type": "info",
@@ -351,6 +399,7 @@ class OpenListStrmRefresh(_PluginBase):
             "cron": "0 3 * * *",
             "paths": "/strm",
             "schedules": "",
+            "change_schedules": "",
             "recursive": True,
             "max_depth": 3,
             "per_page": 0,
@@ -362,14 +411,20 @@ class OpenListStrmRefresh(_PluginBase):
         last_result = self.get_data(self.STORE_LAST_RESULT_KEY) or {}
         paths = self._parse_paths(self._paths)
         schedules = self._parse_schedules(self._schedules)
+        change_schedules = self._parse_change_schedules(self._change_schedules)
         schedule_text = "；".join(
             f"{item['frequency']} -> {', '.join(item['paths'])}" for item in schedules
+        )
+        change_schedule_text = "；".join(
+            f"{item['frequency']} -> {item['source']} => {', '.join(item['targets'])}"
+            for item in change_schedules
         )
         status_items = [
             ("状态", "运行中" if self._running else ("已启用" if self._enabled else "未启用")),
             ("默认刷新频率", self._format_frequency(self._default_frequency, self._cron)),
             ("默认扫描目录", "、".join(paths) if paths else "-"),
             ("目录刷新计划", schedule_text or "-"),
+            ("变化检测计划", change_schedule_text or "-"),
             ("递归深度", str(self._max_depth) if self._recursive else "不递归"),
             ("最近运行", str(last_result.get("time") or "-")),
             ("最近结果", str(last_result.get("message") or "-")),
@@ -457,6 +512,72 @@ class OpenListStrmRefresh(_PluginBase):
     def api_status(self) -> schemas.Response:
         return schemas.Response(success=True, data=self.get_data(self.STORE_LAST_RESULT_KEY) or {})
 
+    def detect_changes(self, schedule: Dict[str, Any], schedule_name: str = "") -> Tuple[bool, str, Dict[str, Any]]:
+        if not self._lock.acquire(blocking=False):
+            message = "已有刷新任务正在运行"
+            logger.warning("【OpenList STRM 刷新】%s", message)
+            return False, message, {}
+
+        self._running = True
+        stats = {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "schedule": schedule_name or "变化检测",
+            "source": schedule.get("source"),
+            "targets": schedule.get("targets") or [],
+            "changed": False,
+            "baseline": False,
+            "dirs": 0,
+            "files": 0,
+            "errors": [],
+        }
+        try:
+            source = self._normalize_path(schedule.get("source"))
+            targets = self._parse_paths("\n".join(schedule.get("targets") or []))
+            if not source or not targets:
+                return self._finish(False, "变化检测计划缺少源目录或 STRM 目录", stats)
+
+            conf = self._get_alist_conf()
+            if not conf:
+                return self._finish(False, "未找到 OpenList 存储配置", stats)
+            base_url = self._get_alist_base_url(conf)
+            headers = self._get_alist_auth_header(conf)
+            if not base_url or not headers:
+                return self._finish(False, "OpenList 认证失败", stats)
+
+            snapshot, error = self._build_directory_snapshot(base_url, headers, source)
+            stats["dirs"] = snapshot.get("dirs", 0)
+            stats["files"] = snapshot.get("files", 0)
+            if error:
+                stats["errors"].append({"path": source, "error": error})
+                return self._finish(False, f"检测源目录失败: {error}", stats)
+
+            snapshots = self.get_data(self.STORE_SNAPSHOT_KEY) or {}
+            snapshot_key = self._snapshot_key(source, targets)
+            previous = snapshots.get(snapshot_key)
+            snapshots[snapshot_key] = snapshot
+            self.save_data(self.STORE_SNAPSHOT_KEY, snapshots)
+
+            if not previous:
+                stats["baseline"] = True
+                return self._finish(True, f"已建立目录变化检测基线: {source}", stats)
+
+            changed = previous.get("fingerprint") != snapshot.get("fingerprint")
+            stats["changed"] = changed
+            if not changed:
+                return self._finish(True, f"未检测到目录变化: {source}", stats)
+
+            logger.info("【OpenList STRM 刷新】检测到目录变化: %s，开始刷新: %s", source, ", ".join(targets))
+            self._lock.release()
+            self._running = False
+            return self.refresh_paths(targets, schedule_name or "变化检测刷新")
+        finally:
+            if self._running:
+                self._running = False
+            try:
+                self._lock.release()
+            except RuntimeError:
+                pass
+
     def refresh(self) -> Tuple[bool, str, Dict[str, Any]]:
         schedules = self._parse_schedules(self._schedules)
         if schedules:
@@ -505,11 +626,12 @@ class OpenListStrmRefresh(_PluginBase):
                 self._visit_directory(base_url, headers, path, 0, stats)
 
             success = not stats["errors"]
-            message = (
-                f"访问完成，目录 {stats['dirs']} 个，文件 {stats['files']} 个"
-                if success
-                else f"访问完成但有 {len(stats['errors'])} 个错误，目录 {stats['dirs']} 个，文件 {stats['files']} 个"
-            )
+            message = f"访问完成，目录 {stats['dirs']} 个，文件 {stats['files']} 个"
+            if not success:
+                message = (
+                    f"访问完成但有 {len(stats['errors'])} 个错误，目录 {stats['dirs']} 个，"
+                    f"文件 {stats['files']} 个；{self._format_errors(stats['errors'])}"
+                )
             return self._finish(success, message, stats)
         finally:
             self._running = False
@@ -559,12 +681,14 @@ class OpenListStrmRefresh(_PluginBase):
                 "refresh": self._refresh,
             },
         )
-        if not resp or resp.status_code != 200:
-            return {}, "请求目录失败"
+        if not resp:
+            return {}, "请求目录失败: 无响应"
+        if resp.status_code != 200:
+            return {}, f"请求目录失败: HTTP {resp.status_code} {self._response_text(resp)}"
         try:
             result = resp.json()
         except Exception as e:
-            return {}, f"解析响应失败: {e}"
+            return {}, f"解析响应失败: {e} {self._response_text(resp)}"
         if result.get("code") != 200:
             return {}, str(result.get("message") or "OpenList 返回错误")
 
@@ -581,7 +705,58 @@ class OpenListStrmRefresh(_PluginBase):
             )
         return {"files": files}, ""
 
+    def _build_directory_snapshot(self, base_url: str, headers: Dict[str, str], path: str) -> Tuple[Dict[str, Any], str]:
+        items = []
+        stats = {"dirs": 0, "files": 0}
+        error = self._collect_directory_snapshot(base_url, headers, path, 0, items, stats)
+        raw_fingerprint = "\n".join(sorted(items))
+        fingerprint = hashlib.sha256(raw_fingerprint.encode("utf-8")).hexdigest()
+        return {
+            "path": self._normalize_path(path),
+            "fingerprint": fingerprint,
+            "dirs": stats["dirs"],
+            "files": stats["files"],
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }, error
+
+    def _collect_directory_snapshot(
+        self,
+        base_url: str,
+        headers: Dict[str, str],
+        path: str,
+        depth: int,
+        items: List[str],
+        stats: Dict[str, int],
+    ) -> str:
+        clean_path = self._normalize_path(path)
+        listing, error = self._list_directory(base_url, headers, clean_path)
+        if error:
+            return error
+
+        stats["dirs"] += 1
+        for item in listing.get("files", []):
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            child_path = f"{clean_path.rstrip('/')}/{name}" if clean_path != "/" else f"/{name}"
+            is_dir = bool(item.get("is_dir"))
+            marker = "D" if is_dir else "F"
+            items.append(
+                f"{marker}\t{child_path}\t{item.get('size') or 0}\t{item.get('modified') or ''}"
+            )
+            if is_dir and self._recursive and depth < self._max_depth:
+                child_error = self._collect_directory_snapshot(
+                    base_url, headers, child_path, depth + 1, items, stats
+                )
+                if child_error:
+                    return child_error
+            elif not is_dir:
+                stats["files"] += 1
+        return ""
+
     def _finish(self, success: bool, message: str, data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+        if not success and data.get("errors") and "；" not in message:
+            message = f"{message}；{self._format_errors(data['errors'])}"
         data["success"] = success
         data["message"] = message
         data["finish_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -591,6 +766,29 @@ class OpenListStrmRefresh(_PluginBase):
         else:
             logger.warning("【OpenList STRM 刷新】%s", message)
         return success, message, data
+
+    @staticmethod
+    def _format_errors(errors: List[Dict[str, Any]], limit: int = 3) -> str:
+        if not errors:
+            return ""
+        parts = []
+        for item in errors[:limit]:
+            path = item.get("path") or "-"
+            error = item.get("error") or "-"
+            parts.append(f"{path}: {error}")
+        if len(errors) > limit:
+            parts.append(f"另有 {len(errors) - limit} 个错误")
+        return "错误明细: " + "；".join(parts)
+
+    @staticmethod
+    def _response_text(resp: Any, limit: int = 200) -> str:
+        try:
+            text = str(getattr(resp, "text", "") or "").strip()
+        except Exception:
+            text = ""
+        if not text:
+            return ""
+        return text[:limit]
 
     @classmethod
     def _get_alist_conf(cls) -> Optional[StorageConf]:
@@ -684,11 +882,47 @@ class OpenListStrmRefresh(_PluginBase):
         return schedules
 
     @staticmethod
+    def _parse_change_schedules(value: Any) -> List[Dict[str, Any]]:
+        schedules = []
+        for line in str(value or "").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "|" not in line or "->" not in line:
+                logger.warning("【OpenList STRM 刷新】忽略无效变化检测计划: %s", line)
+                continue
+            frequency, mapping = line.split("|", 1)
+            source, targets = mapping.split("->", 1)
+            frequency = frequency.strip()
+            cron = OpenListStrmRefresh._resolve_frequency(frequency) or frequency
+            source_path = OpenListStrmRefresh._normalize_path(source)
+            target_paths = OpenListStrmRefresh._parse_paths(targets)
+            if not cron or not source_path or not target_paths:
+                logger.warning("【OpenList STRM 刷新】忽略无效变化检测计划: %s", line)
+                continue
+            schedules.append(
+                {
+                    "cron": cron,
+                    "frequency": frequency,
+                    "source": source_path,
+                    "targets": target_paths,
+                }
+            )
+        return schedules
+
+    @staticmethod
+    def _snapshot_key(source: str, targets: List[str]) -> str:
+        return f"{OpenListStrmRefresh._normalize_path(source)}=>{','.join(OpenListStrmRefresh._parse_paths(','.join(targets)))}"
+
+    @staticmethod
     def _resolve_frequency(value: Any) -> str:
         text = str(value or "").strip()
         normalized = text.replace(" ", "").replace("：", ":")
         mapping = {
             "daily_3": "0 3 * * *",
+            "every_15_minutes": "*/15 * * * *",
+            "every_30_minutes": "*/30 * * * *",
+            "hourly": "0 * * * *",
             "every_6_hours": "0 */6 * * *",
             "every_12_hours": "0 */12 * * *",
             "every_2_days": "0 3 */2 * *",
@@ -699,6 +933,12 @@ class OpenListStrmRefresh(_PluginBase):
             "每天凌晨3点": "0 3 * * *",
             "每日03点": "0 3 * * *",
             "每日3点": "0 3 * * *",
+            "每15分钟": "*/15 * * * *",
+            "每十五分钟": "*/15 * * * *",
+            "每30分钟": "*/30 * * * *",
+            "每三十分钟": "*/30 * * * *",
+            "每1小时": "0 * * * *",
+            "每小时": "0 * * * *",
             "每6小时": "0 */6 * * *",
             "每六小时": "0 */6 * * *",
             "每12小时": "0 */12 * * *",
@@ -719,6 +959,9 @@ class OpenListStrmRefresh(_PluginBase):
         text = str(value or "").strip()
         titles = {
             "daily_3": "每天 03:00",
+            "every_15_minutes": "每 15 分钟",
+            "every_30_minutes": "每 30 分钟",
+            "hourly": "每小时",
             "every_6_hours": "每 6 小时",
             "every_12_hours": "每 12 小时",
             "every_2_days": "每 2 天 03:00",

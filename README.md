@@ -2,20 +2,33 @@
 
 `MoviePilot-Plugins` 是 MoviePilot 的插件源码与插件索引仓库。
 
-当前仓库已包含一个 V2 插件：
+当前仓库包含以下 V2 插件：
 
 - `S3Backup`
   路径：[plugins.v2/s3backup](/root/MoviePilot-Plugins/plugins.v2/s3backup/__init__.py)
   功能：定时通过 S3 备份数据库和配置文件，并支持从 S3 恢复
+- `MediaCoverGen`
+  路径：[plugins.v2/mediacovergen](/root/MoviePilot-Plugins/plugins.v2/mediacovergen/__init__.py)
+  功能：生成 Emby/Jellyfin 媒体库动态或静态封面
+- `FFprobeAnalysis`
+  路径：[plugins.v2/ffprobeanalysis](/root/MoviePilot-Plugins/plugins.v2/ffprobeanalysis/__init__.py)
+  功能：通过 ffprobe 分析媒体信息，补全重命名字段，并支持 AList 文件重命名
+- `OpenListStrmRefresh`
+  路径：[plugins.v2/openliststrmrefresh](/root/MoviePilot-Plugins/plugins.v2/openliststrmrefresh/__init__.py)
+  功能：定时访问 OpenList STRM 驱动目录，并支持检测源目录变化后刷新对应 STRM 目录
 
 当前仓库结构：
 
 ```text
 MoviePilot-Plugins/
 ├── plugins.v2/
+│   ├── ffprobeanalysis/
+│   ├── mediacovergen/
+│   ├── openliststrmrefresh/
 │   └── s3backup/
 ├── icons/
-│   └── S3.png
+├── fonts/
+├── images/
 ├── docs/
 └── package.v2.json
 ```
@@ -23,10 +36,6 @@ MoviePilot-Plugins/
 插件索引：
 
 - [package.v2.json](/root/MoviePilot-Plugins/package.v2.json)
-
-图标资源：
-
-- [S3.png](/root/MoviePilot-Plugins/icons/S3.png)
 
 开发与发布时请优先遵循：
 
