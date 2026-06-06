@@ -48,5 +48,20 @@
       "v0.2.1": "重构重命名表单，使用 Vuetify 组件替换原生 HTML 表单，修复显示与提交问题。",
       "v0.2.0": "适配 OpenList(AList) 文件管理场景，支持通过直链探测媒体信息并补全命名字段。"
     }
+  },
+  "OpenListStrmRefresh": {
+    "name": "OpenList STRM 刷新",
+    "description": "按目录定时访问 OpenList STRM 驱动目录，触发 STRM 文件生成。",
+    "labels": "OpenList,AList,STRM",
+    "version": "0.1.1",
+    "icon": "Alist_B.png",
+    "author": "sucooer",
+    "level": 1,
+    "release": true,
+    "system_version": ">=2.12.0",
+    "history": {
+      "v0.1.1": "支持为不同 STRM 目录配置不同刷新频率。",
+      "v0.1.0": "初始化插件，支持定时和手动访问 OpenList STRM 驱动目录。"
+    }
   }
 }
