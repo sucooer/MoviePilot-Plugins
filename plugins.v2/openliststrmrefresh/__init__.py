@@ -25,7 +25,7 @@ class OpenListStrmRefresh(_PluginBase):
     plugin_name = "OpenList STRM 刷新"
     plugin_desc = "定时访问 OpenList STRM 驱动目录，触发 STRM 文件生成。"
     plugin_icon = "Alist_B.png"
-    plugin_version = "0.1.1"
+    plugin_version = "0.1.2"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openliststrmrefresh_"
@@ -37,6 +37,7 @@ class OpenListStrmRefresh(_PluginBase):
     _enabled = False
     _onlyonce = False
     _cron = ""
+    _default_frequency = "daily_3"
     _paths = ""
     _schedules = ""
     _recursive = True
@@ -58,6 +59,7 @@ class OpenListStrmRefresh(_PluginBase):
         self._enabled = bool(config.get("enabled", False))
         self._onlyonce = bool(config.get("onlyonce", False))
         self._cron = str(config.get("cron") or "").strip()
+        self._default_frequency = str(config.get("default_frequency") or "daily_3").strip()
         self._paths = str(config.get("paths") or "").strip()
         self._schedules = str(config.get("schedules") or "").strip()
         self._recursive = bool(config.get("recursive", True))
@@ -126,12 +128,13 @@ class OpenListStrmRefresh(_PluginBase):
                     "kwargs": {"paths": schedule["paths"], "schedule_name": f"计划 {index}"},
                 }
             )
-        if not schedules and self._cron and self._parse_paths(self._paths):
+        default_cron = self._resolve_frequency(self._default_frequency) or self._cron
+        if not schedules and default_cron and self._parse_paths(self._paths):
             services.append(
                 {
                     "id": "OpenListStrmRefresh",
                     "name": "OpenList STRM 默认刷新",
-                    "trigger": CronTrigger.from_crontab(self._cron),
+                    "trigger": CronTrigger.from_crontab(default_cron),
                     "func": self.refresh,
                     "kwargs": {},
                 }
@@ -139,6 +142,15 @@ class OpenListStrmRefresh(_PluginBase):
         return services
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        frequency_items = [
+            {"title": "每天 03:00", "value": "daily_3"},
+            {"title": "每 6 小时", "value": "every_6_hours"},
+            {"title": "每 12 小时", "value": "every_12_hours"},
+            {"title": "每 2 天 03:00", "value": "every_2_days"},
+            {"title": "每周一 03:00", "value": "weekly_monday_3"},
+            {"title": "每月 1 日 03:00", "value": "monthly_1_3"},
+            {"title": "自定义 cron", "value": "custom"},
+        ]
         return [
             {
                 "component": "VForm",
@@ -198,15 +210,31 @@ class OpenListStrmRefresh(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "default_frequency",
+                                            "label": "默认刷新频率",
+                                            "items": frequency_items,
+                                            "hint": "仅在目录刷新计划为空时使用",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "cron",
-                                            "label": "默认执行周期",
+                                            "label": "自定义 cron",
                                             "placeholder": "0 3 * * *",
-                                            "hint": "仅在目录刷新计划为空时使用；5 位 cron 表达式，例如每天 03:00 执行",
+                                            "hint": "选择自定义 cron 时使用",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -296,9 +324,9 @@ class OpenListStrmRefresh(_PluginBase):
                                         "props": {
                                             "model": "schedules",
                                             "label": "目录刷新计划",
-                                            "placeholder": "0 */6 * * * | /strm/电影\n30 3 * * * | /strm/剧集,/strm/动漫",
+                                            "placeholder": "每6小时 | /strm/电影\n每天03点 | /strm/剧集,/strm/动漫",
                                             "rows": 6,
-                                            "hint": "一行一个计划，格式为 cron | 路径；多个路径用英文逗号分隔。填写后可让不同目录使用不同频率",
+                                            "hint": "一行一个计划，格式为 频率 | 路径；支持 每6小时、每12小时、每天03点、每周一03点，也可直接写 cron",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -319,6 +347,7 @@ class OpenListStrmRefresh(_PluginBase):
         ], {
             "enabled": False,
             "onlyonce": False,
+            "default_frequency": "daily_3",
             "cron": "0 3 * * *",
             "paths": "/strm",
             "schedules": "",
@@ -334,11 +363,11 @@ class OpenListStrmRefresh(_PluginBase):
         paths = self._parse_paths(self._paths)
         schedules = self._parse_schedules(self._schedules)
         schedule_text = "；".join(
-            f"{item['cron']} -> {', '.join(item['paths'])}" for item in schedules
+            f"{item['frequency']} -> {', '.join(item['paths'])}" for item in schedules
         )
         status_items = [
             ("状态", "运行中" if self._running else ("已启用" if self._enabled else "未启用")),
-            ("默认执行周期", self._cron or "-"),
+            ("默认刷新频率", self._format_frequency(self._default_frequency, self._cron)),
             ("默认扫描目录", "、".join(paths) if paths else "-"),
             ("目录刷新计划", schedule_text or "-"),
             ("递归深度", str(self._max_depth) if self._recursive else "不递归"),
@@ -645,13 +674,59 @@ class OpenListStrmRefresh(_PluginBase):
                 logger.warning("【OpenList STRM 刷新】忽略无效刷新计划: %s", line)
                 continue
             cron, raw_paths = line.split("|", 1)
-            cron = cron.strip()
+            frequency = cron.strip()
+            cron = OpenListStrmRefresh._resolve_frequency(frequency) or frequency
             paths = OpenListStrmRefresh._parse_paths(raw_paths)
             if not cron or not paths:
                 logger.warning("【OpenList STRM 刷新】忽略无效刷新计划: %s", line)
                 continue
-            schedules.append({"cron": cron, "paths": paths})
+            schedules.append({"cron": cron, "frequency": frequency, "paths": paths})
         return schedules
+
+    @staticmethod
+    def _resolve_frequency(value: Any) -> str:
+        text = str(value or "").strip()
+        normalized = text.replace(" ", "").replace("：", ":")
+        mapping = {
+            "daily_3": "0 3 * * *",
+            "every_6_hours": "0 */6 * * *",
+            "every_12_hours": "0 */12 * * *",
+            "every_2_days": "0 3 */2 * *",
+            "weekly_monday_3": "0 3 * * 1",
+            "monthly_1_3": "0 3 1 * *",
+            "每天03点": "0 3 * * *",
+            "每天3点": "0 3 * * *",
+            "每天凌晨3点": "0 3 * * *",
+            "每日03点": "0 3 * * *",
+            "每日3点": "0 3 * * *",
+            "每6小时": "0 */6 * * *",
+            "每六小时": "0 */6 * * *",
+            "每12小时": "0 */12 * * *",
+            "每十二小时": "0 */12 * * *",
+            "每2天": "0 3 */2 * *",
+            "每两天": "0 3 */2 * *",
+            "每周一03点": "0 3 * * 1",
+            "每周一3点": "0 3 * * 1",
+            "每月1日03点": "0 3 1 * *",
+            "每月1日3点": "0 3 1 * *",
+        }
+        if normalized == "custom":
+            return ""
+        return mapping.get(normalized, "")
+
+    @staticmethod
+    def _format_frequency(value: Any, custom_cron: str = "") -> str:
+        text = str(value or "").strip()
+        titles = {
+            "daily_3": "每天 03:00",
+            "every_6_hours": "每 6 小时",
+            "every_12_hours": "每 12 小时",
+            "every_2_days": "每 2 天 03:00",
+            "weekly_monday_3": "每周一 03:00",
+            "monthly_1_3": "每月 1 日 03:00",
+            "custom": f"自定义 cron: {custom_cron or '-'}",
+        }
+        return titles.get(text, text or "-")
 
     @staticmethod
     def _normalize_path(value: Any) -> str:
