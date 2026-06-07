@@ -54,7 +54,7 @@ class MediaCoverGen(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/emby.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "sucooer"
     # 作者主页
@@ -486,6 +486,7 @@ class MediaCoverGen(_PluginBase):
         zh_specs = [
             {"title": "潮黑", "value": "chaohei", "aliases": ["chaohei", "wendao", "潮黑", "chao_hei"]},
             {"title": "粗雅宋", "value": "yasong", "aliases": ["yasong", "粗雅宋", "multi_1_zh", "ya_song"]},
+            {"title": "奶酪", "value": "NaiNao", "aliases": ["nainao", "nai_nao", "奶酪"]},
         ]
         en_specs = [
             {"title": "EmblemaOne", "value": "EmblemaOne", "aliases": ["emblemaone", "emblema_one"]},
@@ -4372,6 +4373,7 @@ class MediaCoverGen(_PluginBase):
         default_font_url = {
             "chaohei": "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/fonts/chaohei.ttf",
             "yasong": "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/fonts/yasong.ttf",
+            "NaiNao": "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/fonts/nainao.woff2",
             "EmblemaOne": "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/fonts/EmblemaOne.woff2",
             "Melete": "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/fonts/Melete.otf",
             "Phosphate": "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/fonts/phosphate.ttf",
