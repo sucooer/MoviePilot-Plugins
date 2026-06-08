@@ -26,7 +26,7 @@ class OpenListStrmRefresh(_PluginBase):
     plugin_name = "OpenList STRM 刷新"
     plugin_desc = "定时访问 OpenList STRM 驱动目录，触发 STRM 文件生成。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.1.6"
+    plugin_version = "0.1.7"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openliststrmrefresh_"
