@@ -24,22 +24,22 @@ from app.schemas.types import ChainEventType, MediaType, NotificationType
 from app.core.cache import TTLCache
 
 
-class AlistMonitor(_PluginBase):
+class OpenListMonitor(_PluginBase):
     """
-    监控 OpenList(AList) 目录变化，提交新增文件给 MoviePilot 整理。
+    监控 OpenList 目录变化，提交新增文件给 MoviePilot 整理。
     """
 
-    plugin_name = "AList 目录监控"
+    plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
-    plugin_icon = "Alist_B.png"
-    plugin_version = "0.3.5"
+    plugin_icon = "OpenList.png"
+    plugin_version = "0.3.6"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
-    plugin_config_prefix = "alistmonitor_"
+    plugin_config_prefix = "openlistmonitor_"
     plugin_order = 54
     auth_level = 1
 
-    _alist_token_cache = TTLCache(region="alist_monitor", maxsize=32, ttl=3600)
+    _alist_token_cache = TTLCache(region="openlist_monitor", maxsize=32, ttl=3600)
 
     _enabled = False
     _onlyonce = False
@@ -77,6 +77,7 @@ class AlistMonitor(_PluginBase):
 
     STORE_RESULT_KEY = "last_result"
     STORE_TRANSFERRED_KEY = "transferred_files"
+    LEGACY_PLUGIN_ID = "AlistMonitor"
 
     OPENLIST_MAX_LIST_PAGE_SIZE = 500
     DIRECTORY_VISIBLE_RETRIES = 6
@@ -98,7 +99,7 @@ class AlistMonitor(_PluginBase):
     def init_plugin(self, config: dict = None):
         self.stop_service()
 
-        config = config or {}
+        config = self._migrate_legacy_plugin_state(config or {})
         self._enabled = bool(config.get("enabled", False))
         self._onlyonce = bool(config.get("onlyonce", False))
         self._cron = str(config.get("cron") or "").strip()
@@ -146,7 +147,7 @@ class AlistMonitor(_PluginBase):
         self._migrate_legacy_path_config(config)
 
         if not self._enabled and not self._onlyonce:
-            logger.info("【AList 目录监控】插件未启用")
+            logger.info("【OpenList 目录监控】插件未启用")
             return
 
         if self._onlyonce:
@@ -155,7 +156,7 @@ class AlistMonitor(_PluginBase):
                 func=self.run_check,
                 trigger="date",
                 run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
-                name="AList 目录监控立即执行",
+                name="OpenList 目录监控立即执行",
             )
             self._scheduler.start()
             config["onlyonce"] = False
@@ -177,7 +178,7 @@ class AlistMonitor(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "立即检查目录变化",
-                "description": "立即检查所有配置的 AList 目录是否有新文件。",
+                "description": "立即检查所有配置的 OpenList 目录是否有新文件。",
             },
             {
                 "path": "/status",
@@ -195,8 +196,8 @@ class AlistMonitor(_PluginBase):
             return services
         if self._cron:
             services.append({
-                "id": "AlistMonitor",
-                "name": "AList 目录监控定时检查",
+                "id": "OpenListMonitor",
+                "name": "OpenList 目录监控定时检查",
                 "trigger": CronTrigger.from_crontab(self._cron),
                 "func": self.run_check,
                 "kwargs": {},
@@ -258,7 +259,7 @@ class AlistMonitor(_PluginBase):
                                         "props": {
                                             "model": "refresh",
                                             "label": "强制刷新缓存",
-                                            "hint": "调用 Alist 列目录时携带 refresh=true",
+                                            "hint": "调用 OpenList 列目录时携带 refresh=true",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -458,9 +459,9 @@ class AlistMonitor(_PluginBase):
                                         "props": {
                                             "model": "target_path_rules",
                                             "label": "监控整理目录",
-                                            "placeholder": "/清真云/主/下载中 => /清真云/主/影音\n/115网盘/下载中 => /115网盘/影音",
+                                            "placeholder": "/网盘A/下载中 => /网盘A/媒体库\n/网盘B/下载中 => /网盘B/媒体库",
                                             "rows": 4,
-                                            "hint": "一行一个源目录=>目标媒体目录，左边扫描，右边作为整理目标",
+                                            "hint": "一行一个源目录 => 目标媒体目录，左边扫描，右边作为整理目标",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -650,7 +651,7 @@ class AlistMonitor(_PluginBase):
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "插件会读取 MoviePilot 中名为 alist 的 OpenList 存储配置。远程整理模式会把新增主视频提交给 MoviePilot 整理链，并由 OpenList 执行网盘内移动/重命名。",
+                            "text": "插件会读取 MoviePilot 的 OpenList 存储配置。远程整理模式会把新增主视频提交给 MoviePilot 整理链，并由 OpenList 执行网盘内移动/重命名。",
                         },
                     },
                 ],
@@ -697,7 +698,7 @@ class AlistMonitor(_PluginBase):
             ("检查周期", self._cron or "-"),
             ("监控整理目录数", str(len(target_rules))),
             ("监控整理目录", "、".join(self._format_target_path_rules(target_rules)) if target_rules else "-"),
-            ("目标存储", self._target_storage or "-"),
+            ("目标存储", self._format_storage_name(self._target_storage)),
             ("整理方式", self._transfer_type or "-"),
             ("媒体类型", "、".join(self._media_types) if self._media_types else "-"),
             ("媒体类型目录", "是" if self._library_type_folder else "否"),
@@ -760,7 +761,7 @@ class AlistMonitor(_PluginBase):
                                         "text": "立即检查",
                                         "events": {
                                             "click": {
-                                                "api": "plugin/AlistMonitor/check",
+                                                "api": "plugin/OpenListMonitor/check",
                                                 "method": "post",
                                             }
                                         },
@@ -793,7 +794,7 @@ class AlistMonitor(_PluginBase):
                 if self._scheduler.running:
                     self._scheduler.shutdown(wait=False)
         except Exception as e:
-            logger.debug("【AList 目录监控】停止调度器失败: %s", e)
+            logger.debug("【OpenList 目录监控】停止调度器失败: %s", e)
         self._scheduler = None
         self._event.clear()
 
@@ -820,7 +821,7 @@ class AlistMonitor(_PluginBase):
             data.updated_str = cleaned
             data.source = self.plugin_name
             logger.info(
-                "【AList 目录监控】清理整理目标路径换行: %s -> %s",
+                "【OpenList 目录监控】清理整理目标路径换行: %s -> %s",
                 data.render_str,
                 cleaned,
             )
@@ -828,7 +829,7 @@ class AlistMonitor(_PluginBase):
     def run_check(self) -> Tuple[bool, str, Dict[str, Any]]:
         if not self._lock.acquire(blocking=False):
             message = "已有检查任务正在运行"
-            logger.warning("【AList 目录监控】%s", message)
+            logger.warning("【OpenList 目录监控】%s", message)
             return False, message, {}
 
         self._running = True
@@ -895,7 +896,7 @@ class AlistMonitor(_PluginBase):
                 )
                 if stats["limited_files"]:
                     logger.info(
-                        "【AList 目录监控】本轮限速处理 %s/%s 个文件，剩余 %s 个下轮继续",
+                        "【OpenList 目录监控】本轮限速处理 %s/%s 个文件，剩余 %s 个下轮继续",
                         len(pending_files),
                         len(new_files_found),
                         stats["limited_files"],
@@ -952,7 +953,7 @@ class AlistMonitor(_PluginBase):
         listing, error = self._list_directory(base_url, headers, clean_path)
         if error:
             stats["errors"].append({"path": clean_path, "error": error})
-            logger.warning("【AList 目录监控】扫描失败: %s - %s", clean_path, error)
+            logger.warning("【OpenList 目录监控】扫描失败: %s - %s", clean_path, error)
             return new_files
 
         stats["dirs"] += 1
@@ -986,7 +987,7 @@ class AlistMonitor(_PluginBase):
             if key in already_processed:
                 if self._transfer_type == "move":
                     logger.info(
-                        "【AList 目录监控】源文件仍在监控目录，重新提交已记录文件: %s",
+                        "【OpenList 目录监控】源文件仍在监控目录，重新提交已记录文件: %s",
                         item_path,
                     )
                 else:
@@ -1028,7 +1029,7 @@ class AlistMonitor(_PluginBase):
             from app.chain.transfer import TransferChain
         except Exception as e:
             message = f"加载 MoviePilot 整理链失败: {e}"
-            logger.error("【AList 目录监控】%s", message)
+            logger.error("【OpenList 目录监控】%s", message)
             stats["errors"].append({"path": "-", "error": message})
             return 0
 
@@ -1061,7 +1062,7 @@ class AlistMonitor(_PluginBase):
                 if skipped_type:
                     stats["skipped_type"] = int(stats.get("skipped_type") or 0) + 1
                     logger.info(
-                        "【AList 目录监控】跳过未选择媒体类型: %s - %s",
+                        "【OpenList 目录监控】跳过未选择媒体类型: %s - %s",
                         file_info["path"],
                         prepare_error,
                     )
@@ -1072,7 +1073,7 @@ class AlistMonitor(_PluginBase):
                         "error": prepare_error,
                     })
                     logger.warning(
-                        "【AList 目录监控】远程整理准备失败 %s: %s",
+                        "【OpenList 目录监控】远程整理准备失败 %s: %s",
                         file_info["path"], prepare_error,
                     )
                     continue
@@ -1086,9 +1087,9 @@ class AlistMonitor(_PluginBase):
                 )
 
                 logger.info(
-                    "【AList 目录监控】提交远程整理: %s -> [%s]%s (%s)，监控根目录：%s",
+                    "【OpenList 目录监控】提交远程整理: %s -> [%s]%s (%s)，监控根目录：%s",
                     file_info["path"],
-                    target_storage,
+                    self._format_storage_name(target_storage),
                     final_target_path or "按 MoviePilot 目录规则",
                     transfer_type,
                     file_info.get("monitor_root") or "-",
@@ -1112,18 +1113,18 @@ class AlistMonitor(_PluginBase):
                 if state:
                     transferred_records.add(self._record_key(file_info))
                     count += 1
-                    logger.info("【AList 目录监控】已提交整理: %s", file_info["path"])
+                    logger.info("【OpenList 目录监控】已提交整理: %s", file_info["path"])
                 else:
                     error = str(message or "整理失败")
                     stats["errors"].append({"path": file_info["path"], "error": error})
                     logger.warning(
-                        "【AList 目录监控】远程整理失败 %s: %s",
+                        "【OpenList 目录监控】远程整理失败 %s: %s",
                         file_info["path"], error,
                     )
             except Exception as e:
                 stats["errors"].append({"path": file_info.get("path"), "error": str(e)})
                 logger.error(
-                    "【AList 目录监控】远程整理异常 %s: %s",
+                    "【OpenList 目录监控】远程整理异常 %s: %s",
                     file_info.get("path"), e,
                 )
 
@@ -1167,7 +1168,7 @@ class AlistMonitor(_PluginBase):
         if adjusted_options:
             transfer_options.update(adjusted_options)
             logger.info(
-                "【AList 目录监控】顶层分类路径调整: %s -> %s",
+                "【OpenList 目录监控】顶层分类路径调整: %s -> %s",
                 adjusted_options.get("top_level_category"),
                 transfer_options.get("target_path"),
             )
@@ -1218,7 +1219,7 @@ class AlistMonitor(_PluginBase):
             try:
                 transfer_chain.jobview.remove_task(fileitem)
             except Exception as e:
-                logger.debug("【AList 目录监控】清理预览任务失败: %s", e)
+                logger.debug("【OpenList 目录监控】清理预览任务失败: %s", e)
 
     @staticmethod
     def _format_preview_error(preview_data: Any) -> str:
@@ -1297,10 +1298,10 @@ class AlistMonitor(_PluginBase):
 
     @staticmethod
     def _relative_path_parts(root: Any, path: Any) -> List[str]:
-        clean_root = AlistMonitor._normalize_path(root)
-        clean_path = AlistMonitor._normalize_path(
-            AlistMonitor._strip_preview_storage_prefix(
-                AlistMonitor._clean_render_path(path)
+        clean_root = OpenListMonitor._normalize_path(root)
+        clean_path = OpenListMonitor._normalize_path(
+            OpenListMonitor._strip_preview_storage_prefix(
+                OpenListMonitor._clean_render_path(path)
             )
         )
         if not clean_root or not clean_path or clean_path == clean_root:
@@ -1381,7 +1382,7 @@ class AlistMonitor(_PluginBase):
             return False, f"创建目录 {path} 失败: 解析响应失败 {e}"
         if result.get("code") == 200 or self._alist_path_exists(base_url, headers, path):
             if self._wait_alist_path_exists(base_url, headers, path):
-                logger.info("【AList 目录监控】已确认目标目录: %s", path)
+                logger.info("【OpenList 目录监控】已确认目标目录: %s", path)
                 return True, ""
             return False, f"创建目录 {path} 后等待 OpenList 可见超时"
         return False, (
@@ -1472,14 +1473,14 @@ class AlistMonitor(_PluginBase):
             cleaned_files += residual_files
             if not cleanable:
                 if message:
-                    logger.debug("【AList 目录监控】跳过空目录清理 %s: %s", path, message)
+                    logger.debug("【OpenList 目录监控】跳过空目录清理 %s: %s", path, message)
                 continue
             state, message = self._remove_alist_path(base_url, headers, path)
             if state:
                 cleaned_dirs += 1
-                logger.info("【AList 目录监控】已清理空目录: %s", path)
+                logger.info("【OpenList 目录监控】已清理空目录: %s", path)
             else:
-                logger.warning("【AList 目录监控】清理空目录失败 %s: %s", path, message)
+                logger.warning("【OpenList 目录监控】清理空目录失败 %s: %s", path, message)
         return cleaned_dirs, cleaned_files
 
     @staticmethod
@@ -1563,7 +1564,7 @@ class AlistMonitor(_PluginBase):
 
         for name in residual_names:
             logger.info(
-                "【AList 目录监控】已清理残留文件: %s/%s",
+                "【OpenList 目录监控】已清理残留文件: %s/%s",
                 path.rstrip("/"),
                 name,
             )
@@ -1747,9 +1748,9 @@ class AlistMonitor(_PluginBase):
         data["finish_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.save_data(self.STORE_RESULT_KEY, data)
         if success:
-            logger.info("【AList 目录监控】%s", message)
+            logger.info("【OpenList 目录监控】%s", message)
         else:
-            logger.warning("【AList 目录监控】%s", message)
+            logger.warning("【OpenList 目录监控】%s", message)
         self._send_finish_notification(message, data)
         return success, message, data
 
@@ -1806,7 +1807,7 @@ class AlistMonitor(_PluginBase):
                 text="\n".join(lines),
             )
         except Exception as e:
-            logger.warning("【AList 目录监控】发送完成通知失败: %s", e)
+            logger.warning("【OpenList 目录监控】发送完成通知失败: %s", e)
 
     @staticmethod
     def _format_cleaned_files(stats: Dict[str, Any]) -> str:
@@ -1827,6 +1828,13 @@ class AlistMonitor(_PluginBase):
     def _format_skipped_type(stats: Dict[str, Any]) -> str:
         skipped_type = int(stats.get("skipped_type") or 0)
         return f"，跳过媒体类型 {skipped_type} 个" if skipped_type else ""
+
+    @staticmethod
+    def _format_storage_name(value: Any) -> str:
+        storage = str(value or "").strip()
+        if storage == "alist":
+            return "OpenList"
+        return storage or "-"
 
     def _is_media_ext(self, ext: str) -> bool:
         ext = self._normalize_extension(ext)
@@ -1888,7 +1896,7 @@ class AlistMonitor(_PluginBase):
     def _build_alist_fileitem(file_info: Dict[str, Any]) -> schemas.FileItem:
         path = str(file_info.get("path") or "").strip()
         name = str(file_info.get("name") or Path(path).name).strip()
-        ext = AlistMonitor._normalize_extension(file_info.get("ext") or Path(name).suffix)
+        ext = OpenListMonitor._normalize_extension(file_info.get("ext") or Path(name).suffix)
         return schemas.FileItem(
             storage="alist",
             type="file",
@@ -1904,7 +1912,7 @@ class AlistMonitor(_PluginBase):
         try:
             return StorageHelper().get_storage("alist")
         except Exception as e:
-            logger.debug("【AList 目录监控】读取 OpenList 存储配置失败: %s", e)
+            logger.debug("【OpenList 目录监控】读取 OpenList 存储配置失败: %s", e)
             return None
 
     @classmethod
@@ -1941,13 +1949,13 @@ class AlistMonitor(_PluginBase):
             json={"username": username, "password": password},
         )
         if not resp or resp.status_code != 200:
-            logger.warning("【AList 目录监控】OpenList 登录失败")
+            logger.warning("【OpenList 目录监控】OpenList 登录失败")
             return {}
         try:
             result = resp.json()
             if result.get("code") != 200:
                 logger.warning(
-                    "【AList 目录监控】OpenList 登录失败: %s",
+                    "【OpenList 目录监控】OpenList 登录失败: %s",
                     result.get("message"),
                 )
                 return {}
@@ -1956,7 +1964,7 @@ class AlistMonitor(_PluginBase):
                 cls._alist_token_cache.set(base_url, token)
                 return {"Authorization": token}
         except Exception as e:
-            logger.warning("【AList 目录监控】解析登录结果失败: %s", e)
+            logger.warning("【OpenList 目录监控】解析登录结果失败: %s", e)
         return {}
 
     def _migrate_legacy_path_config(self, config: Dict[str, Any]) -> None:
@@ -1973,9 +1981,47 @@ class AlistMonitor(_PluginBase):
         config["target_path_rules"] = text
         try:
             self.update_config(config)
-            logger.info("【AList 目录监控】已迁移旧目录配置到监控整理目录")
+            logger.info("【OpenList 目录监控】已迁移旧目录配置到监控整理目录")
         except Exception as e:
-            logger.warning("【AList 目录监控】迁移旧目录配置失败: %s", e)
+            logger.warning("【OpenList 目录监控】迁移旧目录配置失败: %s", e)
+
+    def _migrate_legacy_plugin_state(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        new_config = dict(config or {})
+        try:
+            legacy_config = self.get_config(self.LEGACY_PLUGIN_ID)
+        except Exception as e:
+            legacy_config = None
+            logger.debug("【OpenList 目录监控】读取旧插件配置失败: %s", e)
+
+        if not new_config and isinstance(legacy_config, dict) and legacy_config:
+            new_config = {key: value for key, value in legacy_config.items() if key}
+            try:
+                self.update_config(new_config)
+                logger.info(
+                    "【OpenList 目录监控】已迁移旧插件配置: %s -> %s",
+                    self.LEGACY_PLUGIN_ID,
+                    self.__class__.__name__,
+                )
+            except Exception as e:
+                logger.warning("【OpenList 目录监控】迁移旧插件配置失败: %s", e)
+
+        for key in (self.STORE_RESULT_KEY, self.STORE_TRANSFERRED_KEY):
+            try:
+                current_data = self.get_data(key)
+                if current_data not in (None, "", {}, []):
+                    continue
+                legacy_data = self.get_data(key, plugin_id=self.LEGACY_PLUGIN_ID)
+                if legacy_data in (None, ""):
+                    continue
+                self.save_data(key, legacy_data)
+                logger.info(
+                    "【OpenList 目录监控】已迁移旧插件数据: %s/%s",
+                    self.LEGACY_PLUGIN_ID,
+                    key,
+                )
+            except Exception as e:
+                logger.debug("【OpenList 目录监控】迁移旧插件数据失败 %s: %s", key, e)
+        return new_config
 
     def _get_monitor_target_rules(self) -> List[Dict[str, str]]:
         rules = self._parse_target_path_rules(self._target_path_rules)
@@ -1992,7 +2038,7 @@ class AlistMonitor(_PluginBase):
         paths = []
         seen = set()
         for rule in rules:
-            source = AlistMonitor._normalize_path(rule.get("source"))
+            source = OpenListMonitor._normalize_path(rule.get("source"))
             if source and source not in seen:
                 seen.add(source)
                 paths.append(source)
@@ -2002,8 +2048,8 @@ class AlistMonitor(_PluginBase):
     def _format_target_path_rules(rules: List[Dict[str, str]]) -> List[str]:
         lines = []
         for rule in rules:
-            source = AlistMonitor._normalize_path(rule.get("source"))
-            target = AlistMonitor._normalize_path(rule.get("target"))
+            source = OpenListMonitor._normalize_path(rule.get("source"))
+            target = OpenListMonitor._normalize_path(rule.get("target"))
             if source and target:
                 lines.append(f"{source} => {target}")
         return lines
@@ -2052,8 +2098,8 @@ class AlistMonitor(_PluginBase):
                     break
             if not source or not target:
                 continue
-            source_path = AlistMonitor._normalize_path(source)
-            target_path = AlistMonitor._normalize_path(target)
+            source_path = OpenListMonitor._normalize_path(source)
+            target_path = OpenListMonitor._normalize_path(target)
             if not source_path or not target_path or source_path in seen_sources:
                 continue
             seen_sources.add(source_path)
@@ -2066,7 +2112,7 @@ class AlistMonitor(_PluginBase):
         paths = []
         seen = set()
         for line in raw.splitlines():
-            path = AlistMonitor._normalize_path(line)
+            path = OpenListMonitor._normalize_path(line)
             if path and path not in seen:
                 seen.add(path)
                 paths.append(path)

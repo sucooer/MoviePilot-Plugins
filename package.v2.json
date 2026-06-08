@@ -54,13 +54,14 @@
     "name": "OpenList STRM 刷新",
     "description": "按目录定时访问 OpenList STRM 驱动目录，触发 STRM 文件生成。",
     "labels": "OpenList,AList,STRM",
-    "version": "0.1.5",
-    "icon": "Alist_B.png",
+    "version": "0.1.6",
+    "icon": "OpenList.png",
     "author": "sucooer",
     "level": 1,
     "release": true,
     "system_version": ">=2.12.0",
     "history": {
+      "v0.1.6": "统一插件图标为 OpenList。",
       "v0.1.5": "补充刷新失败汇总中的错误明细和 HTTP 响应信息。",
       "v0.1.4": "修复宿主执行定时服务时未传 kwargs 导致变化检测失败的问题。",
       "v0.1.3": "增加目录变化检测计划，源目录变化后自动刷新对应 STRM 目录。",
@@ -69,20 +70,21 @@
       "v0.1.0": "初始化插件，支持定时和手动访问 OpenList STRM 驱动目录。"
     }
   },
-  "AlistMonitor": {
-    "name": "AList 目录监控",
+  "OpenListMonitor": {
+    "name": "OpenList 目录监控",
     "description": "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。",
-    "labels": "OpenList,AList,目录监控,远程整理,移动",
-    "version": "0.3.5",
-    "icon": "Alist_B.png",
+    "labels": "OpenList,目录监控,远程整理,移动",
+    "version": "0.3.6",
+    "icon": "OpenList.png",
     "author": "sucooer",
     "level": 1,
     "release": true,
     "system_version": ">=2.12.0",
     "history": {
+      "v0.3.6": "统一插件目录、ID、用户可见文案和图标为 OpenList，保留内部 alist 存储标识兼容 MoviePilot，并迁移旧插件配置。",
       "v0.3.5": "新增刮削元数据开关，可在远程整理后强制使用 MoviePilot 刮削。",
       "v0.3.4": "新增顶层分类配置，支持将番剧等 MoviePilot 二级分类直接整理到目标媒体目录下。",
-      "v0.3.3": "收敛配置为源目录=>目标媒体目录形式，并移除下载到本地中转模式，仅保留 OpenList 网盘内远程整理。",
+      "v0.3.3": "收敛配置为源目录 => 目标媒体目录形式，并移除下载到本地中转模式，仅保留 OpenList 网盘内远程整理。",
       "v0.3.2": "新增目标目录映射，可按监控源目录分别指定不同网盘的目标媒体目录。",
       "v0.3.1": "新增残留文件清理，可在远程移动后删除图片、文本等白名单小文件并继续清理源空目录。",
       "v0.3.0": "新增 MoviePilot 原生媒体类型目录和二级分类目录支持，可按电影/电视剧识别结果整理到对应分类目录。",
@@ -96,7 +98,7 @@
       "v0.2.2": "创建 OpenList 目标目录后等待目录可见再继续创建下一级，规避网盘索引延迟导致的父目录不存在错误。",
       "v0.2.1": "远程整理前根据预览结果递归创建 OpenList 目标目录，修复父目录不存在导致季目录创建失败的问题。",
       "v0.2.0": "新增远程整理模式，调用 MoviePilot 整理链并通过 OpenList 在网盘内移动/重命名。",
-      "v0.1.0": "初始化插件，监控 AList 目录变化并自动下载新增媒体文件到本地。"
+      "v0.1.0": "初始化插件，监控 OpenList 目录变化并自动下载新增媒体文件到本地。"
     }
   }
 }
