@@ -16,6 +16,9 @@
 - `OpenListStrmRefresh`
   路径：[plugins.v2/openliststrmrefresh](/root/MoviePilot-Plugins/plugins.v2/openliststrmrefresh/__init__.py)
   功能：定时访问 OpenList STRM 驱动目录，并支持检测源目录变化后刷新对应 STRM 目录
+- `AlistMonitor`
+  路径：[plugins.v2/alistmonitor](/root/MoviePilot-Plugins/plugins.v2/alistmonitor/__init__.py)
+  功能：监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理
 
 当前仓库结构：
 
@@ -23,6 +26,7 @@
 MoviePilot-Plugins/
 ├── plugins.v2/
 │   ├── ffprobeanalysis/
+│   ├── alistmonitor/
 │   ├── mediacovergen/
 │   ├── openliststrmrefresh/
 │   └── s3backup/
