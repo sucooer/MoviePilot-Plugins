@@ -1,4 +1,6 @@
+import asyncio
 import hashlib
+import inspect
 import os
 import threading
 import time
@@ -32,7 +34,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.7"
+    plugin_version = "0.3.9"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -53,6 +55,8 @@ class OpenListMonitor(_PluginBase):
     _library_type_folder = False
     _library_category_folder = False
     _top_level_categories = "番剧"
+    _recognition_rewrite_rules = ""
+    _ai_recognition_fallback = False
     _background_transfer = False
     _sync_extra_files = True
     _scrape = False
@@ -82,6 +86,7 @@ class OpenListMonitor(_PluginBase):
     OPENLIST_MAX_LIST_PAGE_SIZE = 500
     DIRECTORY_VISIBLE_RETRIES = 6
     DIRECTORY_VISIBLE_INTERVAL = 2
+    AI_RECOGNITION_MIN_CONFIDENCE = 0.55
 
     VIDEO_EXTENSIONS = {
         ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v",
@@ -95,6 +100,8 @@ class OpenListMonitor(_PluginBase):
         self._last_openlist_request_at = 0.0
         self._last_transfer_submit_at = 0.0
         self._rate_limit_lock = threading.Lock()
+        self._ai_recognition_cache = {}
+        self._ai_recognition_cache_lock = threading.Lock()
 
     def init_plugin(self, config: dict = None):
         self.stop_service()
@@ -116,6 +123,14 @@ class OpenListMonitor(_PluginBase):
         self._top_level_categories = str(
             config.get("top_level_categories", "番剧") or ""
         ).strip()
+        self._recognition_rewrite_rules = str(
+            config.get("recognition_rewrite_rules") or ""
+        ).strip()
+        self._ai_recognition_fallback = bool(
+            config.get("ai_recognition_fallback", False)
+        )
+        with self._ai_recognition_cache_lock:
+            self._ai_recognition_cache.clear()
         self._background_transfer = bool(config.get("background_transfer", False))
         self._sync_extra_files = bool(config.get("sync_extra_files", True))
         self._scrape = bool(config.get("scrape", False))
@@ -474,6 +489,48 @@ class OpenListMonitor(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "ai_recognition_fallback",
+                                            "label": "AI识别兜底",
+                                            "hint": "原生识别失败时复用 MoviePilot LLM 配置生成候选，并通过 MoviePilot 二次校验后再整理",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "recognition_rewrite_rules",
+                                            "label": "识别词替换",
+                                            "placeholder": "Tamon-kun Ima Docchi => Tamon-kun Ima Docchi!?\nTamon-kun Ima Docchi => Tamon's B-Side",
+                                            "rows": 3,
+                                            "hint": "一行一个源标题=>识别标题，仅影响 MoviePilot 识别，不修改 OpenList 原文件名",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
@@ -669,6 +726,8 @@ class OpenListMonitor(_PluginBase):
             "library_type_folder": False,
             "library_category_folder": False,
             "top_level_categories": "番剧",
+            "recognition_rewrite_rules": "",
+            "ai_recognition_fallback": False,
             "background_transfer": False,
             "sync_extra_files": True,
             "scrape": False,
@@ -704,6 +763,8 @@ class OpenListMonitor(_PluginBase):
             ("媒体类型目录", "是" if self._library_type_folder else "否"),
             ("二级分类目录", "是" if self._library_category_folder else "否"),
             ("顶层分类", "、".join(sorted(self._get_top_level_categories())) or "-"),
+            ("识别词替换", str(len(self._parse_recognition_rewrite_rules(self._recognition_rewrite_rules)))),
+            ("AI识别兜底", "是" if self._ai_recognition_fallback else "否"),
             ("刮削元数据", "强制刮削" if self._scrape else "按媒体库目录设置"),
             ("单轮处理上限", str(self._max_files_per_run)),
             ("API间隔秒", str(self._api_interval_seconds)),
@@ -718,6 +779,7 @@ class OpenListMonitor(_PluginBase):
             ("延后处理数", str(last_result.get("limited_files", 0))),
             ("跳过媒体类型", str(last_result.get("skipped_type", 0))),
             ("已整理数", str(last_result.get("transferred", 0))),
+            ("AI兜底整理", str(last_result.get("ai_recognition_fallback", 0))),
             ("已清理残留文件", str(last_result.get("cleaned_files", 0))),
             ("已清理空目录", str(last_result.get("cleaned_dirs", 0))),
             ("最近结果", str(last_result.get("message") or "-")),
@@ -845,6 +907,8 @@ class OpenListMonitor(_PluginBase):
             "limited_files": 0,
             "skipped_type": 0,
             "transferred": 0,
+            "ai_recognition_fallback": 0,
+            "ai_recognition_fallback_items": [],
             "cleaned_files": 0,
             "cleaned_dirs": 0,
             "rate_limit": {
@@ -852,6 +916,10 @@ class OpenListMonitor(_PluginBase):
                 "library_type_folder": self._library_type_folder,
                 "library_category_folder": self._library_category_folder,
                 "top_level_categories": sorted(self._get_top_level_categories()),
+                "recognition_rewrite_rules": self._parse_recognition_rewrite_rules(
+                    self._recognition_rewrite_rules
+                ),
+                "ai_recognition_fallback": self._ai_recognition_fallback,
                 "scrape": self._scrape,
                 "max_files_per_run": self._max_files_per_run,
                 "api_interval_seconds": self._api_interval_seconds,
@@ -1047,6 +1115,7 @@ class OpenListMonitor(_PluginBase):
                 break
             try:
                 fileitem = self._build_alist_fileitem(file_info)
+                recognition_meta = self._build_recognition_meta(file_info)
                 target_path = self._resolve_target_path(
                     file_info=file_info,
                     default_target_path=default_target_path,
@@ -1058,6 +1127,7 @@ class OpenListMonitor(_PluginBase):
                     target_storage=target_storage,
                     target_path=target_path,
                     transfer_type=transfer_type,
+                    recognition_meta=recognition_meta,
                 )
                 if skipped_type:
                     stats["skipped_type"] = int(stats.get("skipped_type") or 0) + 1
@@ -1085,6 +1155,12 @@ class OpenListMonitor(_PluginBase):
                 final_library_category_folder = transfer_options.get(
                     "library_category_folder", self._library_category_folder
                 )
+                final_recognition_meta = transfer_options.get(
+                    "recognition_meta", recognition_meta
+                )
+                final_recognition_mediainfo = transfer_options.get(
+                    "recognition_mediainfo"
+                )
 
                 logger.info(
                     "【OpenList 目录监控】提交远程整理: %s -> [%s]%s (%s)，监控根目录：%s",
@@ -1098,6 +1174,8 @@ class OpenListMonitor(_PluginBase):
                     break
                 state, message = transfer_chain.do_transfer(
                     fileitem=fileitem,
+                    meta=final_recognition_meta,
+                    mediainfo=final_recognition_mediainfo,
                     target_storage=target_storage,
                     target_path=final_target_path,
                     transfer_type=transfer_type,
@@ -1113,6 +1191,11 @@ class OpenListMonitor(_PluginBase):
                 if state:
                     transferred_records.add(self._record_key(file_info))
                     count += 1
+                    self._record_ai_recognition_success(
+                        stats=stats,
+                        file_info=file_info,
+                        transfer_options=transfer_options,
+                    )
                     logger.info("【OpenList 目录监控】已提交整理: %s", file_info["path"])
                 else:
                     error = str(message or "整理失败")
@@ -1138,11 +1221,16 @@ class OpenListMonitor(_PluginBase):
         target_storage: str,
         target_path: Optional[Path],
         transfer_type: str,
+        recognition_meta: Any = None,
     ) -> Tuple[bool, str, bool, Dict[str, Any]]:
         transfer_options = {
             "target_path": target_path,
             "library_type_folder": self._library_type_folder,
             "library_category_folder": self._library_category_folder,
+            "recognition_meta": recognition_meta,
+            "recognition_mediainfo": None,
+            "recognition_source": None,
+            "ai_recognition_detail": None,
         }
         if target_storage != "alist" or fileitem.storage != "alist":
             return True, "", False, transfer_options
@@ -1153,9 +1241,45 @@ class OpenListMonitor(_PluginBase):
             target_storage=target_storage,
             transfer_path_options=transfer_options,
             transfer_type=transfer_type,
+            recognition_meta=recognition_meta,
+            recognition_mediainfo=transfer_options.get("recognition_mediainfo"),
         )
         if not state:
-            return False, self._format_preview_error(preview_data), False, transfer_options
+            ai_meta, ai_mediainfo = self._build_ai_recognition_result(
+                fileitem=fileitem,
+                source_meta=recognition_meta,
+                preview_data=preview_data,
+            )
+            if ai_meta and ai_mediainfo:
+                transfer_options["recognition_meta"] = ai_meta
+                transfer_options["recognition_mediainfo"] = ai_mediainfo
+                transfer_options["recognition_source"] = "ai"
+                transfer_options["ai_recognition_detail"] = self._build_ai_recognition_detail(
+                    fileitem=fileitem,
+                    mediainfo=ai_mediainfo,
+                )
+                state, preview_data = self._preview_remote_transfer(
+                    transfer_chain=transfer_chain,
+                    fileitem=fileitem,
+                    target_storage=target_storage,
+                    transfer_path_options=transfer_options,
+                    transfer_type=transfer_type,
+                    recognition_meta=ai_meta,
+                    recognition_mediainfo=ai_mediainfo,
+                )
+                if state:
+                    logger.info(
+                        "【OpenList 目录监控】AI识别兜底预览成功: %s -> %s",
+                        fileitem.path,
+                        getattr(ai_mediainfo, "title_year", "") or getattr(ai_mediainfo, "title", ""),
+                    )
+                else:
+                    transfer_options["recognition_meta"] = recognition_meta
+                    transfer_options["recognition_mediainfo"] = None
+                    transfer_options["recognition_source"] = None
+                    transfer_options["ai_recognition_detail"] = None
+            if not state:
+                return False, self._format_preview_error(preview_data), False, transfer_options
 
         media_type_error = self._get_preview_media_type_error(preview_data)
         if media_type_error:
@@ -1178,6 +1302,8 @@ class OpenListMonitor(_PluginBase):
                 target_storage=target_storage,
                 transfer_path_options=transfer_options,
                 transfer_type=transfer_type,
+                recognition_meta=transfer_options.get("recognition_meta"),
+                recognition_mediainfo=transfer_options.get("recognition_mediainfo"),
             )
             if not state:
                 return False, self._format_preview_error(preview_data), False, transfer_options
@@ -1198,10 +1324,14 @@ class OpenListMonitor(_PluginBase):
         target_storage: str,
         transfer_path_options: Dict[str, Any],
         transfer_type: str,
+        recognition_meta: Any = None,
+        recognition_mediainfo: Any = None,
     ) -> Tuple[bool, Any]:
         try:
             return transfer_chain.do_transfer(
                 fileitem=fileitem,
+                meta=recognition_meta,
+                mediainfo=recognition_mediainfo,
                 target_storage=target_storage,
                 target_path=transfer_path_options.get("target_path"),
                 transfer_type=transfer_type,
@@ -1741,6 +1871,44 @@ class OpenListMonitor(_PluginBase):
 
         return {"files": files}, ""
 
+    def _record_ai_recognition_success(
+        self,
+        stats: Dict[str, Any],
+        file_info: Dict[str, Any],
+        transfer_options: Dict[str, Any],
+    ) -> None:
+        if transfer_options.get("recognition_source") != "ai":
+            return
+        detail = dict(transfer_options.get("ai_recognition_detail") or {})
+        if not detail:
+            return
+        detail["source"] = str(file_info.get("path") or detail.get("source") or "")
+        detail["name"] = str(file_info.get("name") or detail.get("name") or "")
+        stats["ai_recognition_fallback"] = int(
+            stats.get("ai_recognition_fallback") or 0
+        ) + 1
+        items = stats.setdefault("ai_recognition_fallback_items", [])
+        if isinstance(items, list):
+            items.append(detail)
+
+    @staticmethod
+    def _build_ai_recognition_detail(
+        fileitem: schemas.FileItem,
+        mediainfo: Any,
+    ) -> Dict[str, Any]:
+        media_type = getattr(mediainfo, "type", None)
+        return {
+            "source": str(getattr(fileitem, "path", "") or ""),
+            "name": str(getattr(fileitem, "name", "") or ""),
+            "title": str(
+                getattr(mediainfo, "title_year", "")
+                or getattr(mediainfo, "title", "")
+                or ""
+            ),
+            "tmdb_id": getattr(mediainfo, "tmdb_id", None) or "",
+            "type": getattr(media_type, "value", "") if media_type else "",
+        }
+
     def _finish(self, message: str, data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
         success = not data.get("errors")
         data["success"] = success
@@ -1784,6 +1952,21 @@ class OpenListMonitor(_PluginBase):
             f"新文件：{int(data.get('new_files') or 0)}",
             f"已提交整理：{int(data.get('transferred') or 0)}",
         ]
+        ai_items = data.get("ai_recognition_fallback_items") or []
+        ai_count = int(data.get("ai_recognition_fallback") or len(ai_items) or 0)
+        if ai_count:
+            lines.append(f"AI识别兜底：{ai_count}")
+            if isinstance(ai_items, list):
+                for item in ai_items[:5]:
+                    source_name = str(item.get("name") or Path(str(item.get("source") or "")).name or "-")
+                    media_title = str(item.get("title") or "-")
+                    tmdb_id = str(item.get("tmdb_id") or "-")
+                    media_type = str(item.get("type") or "-")
+                    lines.append(
+                        f"- {source_name} -> {media_title}（{media_type}，TMDB {tmdb_id}）"
+                    )
+                if len(ai_items) > 5:
+                    lines.append(f"- 其余 {len(ai_items) - 5} 个 AI 兜底条目已省略")
         if int(data.get("limited_files") or 0):
             lines.append(f"延后处理：{int(data.get('limited_files') or 0)}")
         if int(data.get("skipped_type") or 0):
@@ -1882,6 +2065,431 @@ class OpenListMonitor(_PluginBase):
             if category:
                 categories.add(category)
         return categories
+
+    def _build_recognition_meta(self, file_info: Dict[str, Any]) -> Any:
+        rules = self._parse_recognition_rewrite_rules(
+            self._recognition_rewrite_rules
+        )
+        if not rules:
+            return None
+
+        source_path = str(file_info.get("path") or "").strip()
+        if not source_path:
+            return None
+        source_name = str(file_info.get("name") or Path(source_path).name).strip()
+        virtual_path = source_path
+        virtual_name = source_name
+        applied_rule = None
+
+        for rule in rules:
+            source = rule.get("source")
+            target = rule.get("target")
+            if not source or not target:
+                continue
+            if source in virtual_name:
+                virtual_name = virtual_name.replace(source, target, 1)
+                parent = Path(source_path).parent.as_posix()
+                virtual_path = (
+                    f"{parent.rstrip('/')}/{virtual_name}"
+                    if parent and parent != "."
+                    else virtual_name
+                )
+                applied_rule = rule
+                break
+            if source in virtual_path:
+                virtual_path = virtual_path.replace(source, target, 1)
+                virtual_name = Path(virtual_path).name
+                applied_rule = rule
+                break
+
+        if not applied_rule or virtual_path == source_path:
+            return None
+
+        try:
+            from app.core.metainfo import MetaInfoPath
+        except Exception as e:
+            logger.warning("【OpenList 目录监控】加载识别词替换解析器失败: %s", e)
+            return None
+
+        try:
+            meta = MetaInfoPath(Path(virtual_path))
+        except Exception as e:
+            logger.warning(
+                "【OpenList 目录监控】识别词替换解析失败 %s -> %s: %s",
+                source_name,
+                virtual_name,
+                e,
+            )
+            return None
+        if not meta:
+            return None
+        logger.info(
+            "【OpenList 目录监控】应用识别词替换: %s => %s，%s -> %s",
+            applied_rule.get("source"),
+            applied_rule.get("target"),
+            source_name,
+            virtual_name,
+        )
+        return meta
+
+    def _build_ai_recognition_result(
+        self,
+        fileitem: schemas.FileItem,
+        source_meta: Any = None,
+        preview_data: Any = None,
+    ) -> Tuple[Any, Any]:
+        if not self._should_ai_recognition_fallback(preview_data):
+            return None, None
+
+        source_path = str(getattr(fileitem, "path", "") or "").strip()
+        source_name = str(getattr(fileitem, "name", "") or Path(source_path).name).strip()
+        if not source_path and not source_name:
+            return None, None
+
+        try:
+            from app.chain.media import MediaChain
+            from app.core.metainfo import MetaInfo, MetaInfoPath
+        except Exception as e:
+            logger.warning("【OpenList 目录监控】加载AI识别依赖失败: %s", e)
+            return None, None
+
+        base_meta = source_meta
+        if not base_meta:
+            try:
+                base_meta = MetaInfoPath(Path(source_path or source_name))
+            except Exception:
+                base_meta = None
+
+        candidates = self._get_ai_recognition_candidates(
+            fileitem=fileitem,
+            source_meta=base_meta,
+        )
+        if not candidates:
+            return None, None
+
+        media_chain = MediaChain()
+        raw_text = source_path or source_name
+        for candidate in candidates:
+            confidence = self._to_float(candidate.get("confidence"), 0, 0, 1)
+            if confidence < self.AI_RECOGNITION_MIN_CONFIDENCE:
+                logger.debug(
+                    "【OpenList 目录监控】AI识别候选置信度不足，跳过: %s %.2f",
+                    candidate.get("name"),
+                    confidence,
+                )
+                continue
+
+            media_type = self._normalize_ai_media_type(
+                candidate.get("media_type"),
+                source_meta=base_meta,
+            )
+            if media_type and media_type.value not in self._media_types:
+                logger.debug(
+                    "【OpenList 目录监控】AI识别候选媒体类型未选择，跳过: %s %s",
+                    candidate.get("name"),
+                    media_type.value,
+                )
+                continue
+
+            try:
+                meta = MetaInfo(raw_text)
+            except Exception as e:
+                logger.debug("【OpenList 目录监控】AI识别构建元数据失败: %s", e)
+                continue
+
+            meta.name = candidate.get("name")
+            year = str(candidate.get("year") or "").strip()
+            meta.year = year if len(year) == 4 and year.isdigit() else None
+
+            season = self._positive_int(
+                candidate.get("season"),
+                getattr(base_meta, "begin_season", None),
+                getattr(meta, "begin_season", None),
+            )
+            episode = self._positive_int(
+                getattr(base_meta, "begin_episode", None),
+                getattr(meta, "begin_episode", None),
+                candidate.get("episode"),
+            )
+            meta.begin_season = season
+            meta.begin_episode = episode
+            if media_type:
+                meta.type = media_type
+            elif season or episode:
+                meta.type = MediaType.TV
+
+            if meta.type and meta.type.value not in self._media_types:
+                logger.debug(
+                    "【OpenList 目录监控】AI识别候选校验类型未选择，跳过: %s %s",
+                    candidate.get("name"),
+                    meta.type.value,
+                )
+                continue
+
+            try:
+                mediainfo = media_chain.recognize_media(meta=meta, cache=False)
+            except Exception as e:
+                logger.debug(
+                    "【OpenList 目录监控】AI识别候选二次校验异常: %s - %s",
+                    candidate.get("name"),
+                    e,
+                )
+                continue
+            if not mediainfo:
+                logger.debug(
+                    "【OpenList 目录监控】AI识别候选二次校验未命中: %s",
+                    candidate.get("name"),
+                )
+                continue
+            if mediainfo.type and mediainfo.type.value not in self._media_types:
+                logger.info(
+                    "【OpenList 目录监控】AI识别命中但媒体类型未选择，跳过: %s %s",
+                    getattr(mediainfo, "title_year", "") or getattr(mediainfo, "title", ""),
+                    mediainfo.type.value,
+                )
+                continue
+
+            logger.info(
+                "【OpenList 目录监控】AI识别兜底命中: %s -> %s，置信度 %.2f，TMDB %s",
+                source_name or source_path,
+                getattr(mediainfo, "title_year", "") or getattr(mediainfo, "title", ""),
+                confidence,
+                getattr(mediainfo, "tmdb_id", "") or "-",
+            )
+            return meta, mediainfo
+
+        return None, None
+
+    def _should_ai_recognition_fallback(self, preview_data: Any) -> bool:
+        if not self._ai_recognition_fallback:
+            return False
+        message = self._format_preview_error(preview_data)
+        if not message:
+            return False
+        return "媒体信息" in message and ("未识别" in message or "无法识别" in message)
+
+    def _get_ai_recognition_candidates(
+        self,
+        fileitem: schemas.FileItem,
+        source_meta: Any = None,
+    ) -> List[Dict[str, Any]]:
+        cache_key = self._ai_recognition_cache_key(fileitem, source_meta)
+        with self._ai_recognition_cache_lock:
+            cached = self._ai_recognition_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            candidates = self._invoke_ai_recognition_candidates(fileitem, source_meta)
+        except Exception as e:
+            logger.warning("【OpenList 目录监控】AI识别调用失败: %s", e)
+            candidates = []
+
+        normalized = self._normalize_ai_candidates(candidates)
+        with self._ai_recognition_cache_lock:
+            self._ai_recognition_cache[cache_key] = normalized
+        return normalized
+
+    def _invoke_ai_recognition_candidates(
+        self,
+        fileitem: schemas.FileItem,
+        source_meta: Any = None,
+    ) -> List[Dict[str, Any]]:
+        from langchain_core.prompts import ChatPromptTemplate
+        from pydantic import BaseModel, Field
+
+        try:
+            from app.helper.llm import LLMHelper
+        except ImportError:
+            from app.agent.llm import LLMHelper
+
+        class AIRecognitionCandidate(BaseModel):
+            name: str = Field(default="", description="作品标题或常用别名")
+            year: str = Field(default="", description="四位年份，不确定则空")
+            media_type: str = Field(default="unknown", description="movie、tv 或 unknown")
+            season: int = Field(default=0, description="季号，不确定则 0")
+            episode: int = Field(default=0, description="集号，不确定则 0")
+            confidence: float = Field(default=0.0, description="0 到 1 的置信度")
+            reason: str = Field(default="", description="简短理由")
+
+        class AIRecognitionCandidateBundle(BaseModel):
+            candidates: List[AIRecognitionCandidate] = Field(
+                default_factory=list,
+                description="按置信度从高到低排列的候选",
+            )
+
+        llm = self._run_async_compatible(LLMHelper.get_llm(streaming=False))
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """你是 MoviePilot 的影视文件名识别兜底助手。
+
+请根据原始标题、路径和 MoviePilot 当前解析提示，生成最多 5 个适合交给 MoviePilot/TMDB 再次识别的候选作品名。
+
+规则：
+1. 候选 name 只保留作品名或常用正式别名，不要包含发布组、集数、分辨率、编码、字幕、网盘目录等噪音。
+2. 对动画、日剧、罗马音标题，可给出你有把握的正式英文名、罗马音标点版本、中文名或日文名。
+3. 不要编造不存在的作品；不确定时返回空候选或降低 confidence。
+4. 如果能从文件名判断季/集，填 season/episode；否则填 0。
+5. media_type 只能是 movie、tv、unknown。
+6. 按最可能命中的顺序排列，confidence 范围为 0 到 1。""",
+                ),
+                (
+                    "human",
+                    """原始标题：
+{title}
+
+原始路径：
+{path}
+
+MoviePilot 当前解析提示：
+{meta_hint}
+
+插件允许整理的媒体类型：
+{media_types}
+""",
+                ),
+            ]
+        )
+        chain = (
+            prompt
+            | llm.with_structured_output(AIRecognitionCandidateBundle).with_retry(
+                stop_after_attempt=2
+            )
+        )
+        result = chain.invoke(
+            {
+                "title": str(getattr(fileitem, "name", "") or ""),
+                "path": str(getattr(fileitem, "path", "") or ""),
+                "meta_hint": self._build_ai_meta_hint(source_meta),
+                "media_types": "、".join(self._media_types),
+            },
+            config={"configurable": {"timeout": 25}},
+        )
+        raw_candidates = getattr(result, "candidates", []) or []
+        candidates = []
+        for item in raw_candidates:
+            if hasattr(item, "model_dump"):
+                candidates.append(item.model_dump())
+            elif hasattr(item, "dict"):
+                candidates.append(item.dict())
+            elif isinstance(item, dict):
+                candidates.append(item)
+        return candidates
+
+    def _normalize_ai_candidates(self, candidates: Any) -> List[Dict[str, Any]]:
+        normalized = []
+        seen_names = set()
+        for item in candidates or []:
+            if not isinstance(item, dict):
+                continue
+            name = self._clean_ai_candidate_name(item.get("name"))
+            if not name or name.lower() == "unknown":
+                continue
+            key = name.lower()
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            normalized.append({
+                "name": name,
+                "year": str(item.get("year") or "").strip(),
+                "media_type": str(item.get("media_type") or "unknown").strip(),
+                "season": self._to_int(item.get("season"), 0, 0, 99),
+                "episode": self._to_int(item.get("episode"), 0, 0, 9999),
+                "confidence": self._to_float(item.get("confidence"), 0, 0, 1),
+                "reason": str(item.get("reason") or "").strip(),
+            })
+        return sorted(
+            normalized,
+            key=lambda item: float(item.get("confidence") or 0),
+            reverse=True,
+        )[:5]
+
+    @staticmethod
+    def _clean_ai_candidate_name(value: Any) -> str:
+        text = " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
+        return text.strip(" []【】")
+
+    @staticmethod
+    def _build_ai_meta_hint(meta: Any) -> Dict[str, Any]:
+        if not meta:
+            return {}
+        media_type = getattr(meta, "type", None)
+        return {
+            "name": getattr(meta, "name", "") or "",
+            "title": getattr(meta, "title", "") or "",
+            "year": getattr(meta, "year", "") or "",
+            "type": getattr(media_type, "value", "") if media_type else "",
+            "season": getattr(meta, "begin_season", None) or 0,
+            "episode": getattr(meta, "begin_episode", None) or 0,
+            "org_string": getattr(meta, "org_string", "") or "",
+        }
+
+    @staticmethod
+    def _ai_recognition_cache_key(fileitem: schemas.FileItem, source_meta: Any = None) -> str:
+        source_path = str(getattr(fileitem, "path", "") or getattr(fileitem, "name", "") or "")
+        parent = Path(source_path).parent.as_posix() if source_path else ""
+        name = str(
+            getattr(source_meta, "name", "")
+            or getattr(source_meta, "title", "")
+            or Path(source_path).stem
+        ).strip().lower()
+        year = str(getattr(source_meta, "year", "") or "").strip()
+        media_type = getattr(getattr(source_meta, "type", None), "value", "") or ""
+        return "|".join([parent, name, year, media_type])
+
+    @staticmethod
+    def _normalize_ai_media_type(value: Any, source_meta: Any = None) -> Optional[MediaType]:
+        if value == MediaType.MOVIE or value == MediaType.TV:
+            return value
+        text = str(value or "").strip().lower()
+        if text in {"movie", "movies", "电影"}:
+            return MediaType.MOVIE
+        if text in {"tv", "series", "show", "电视剧", "剧集", "番剧"}:
+            return MediaType.TV
+        source_type = getattr(source_meta, "type", None)
+        if source_type in {MediaType.MOVIE, MediaType.TV}:
+            return source_type
+        if getattr(source_meta, "begin_season", None) or getattr(source_meta, "begin_episode", None):
+            return MediaType.TV
+        return None
+
+    @staticmethod
+    def _positive_int(*values: Any) -> Optional[int]:
+        for value in values:
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+            if number > 0:
+                return number
+        return None
+
+    @staticmethod
+    def _run_async_compatible(value: Any) -> Any:
+        if not inspect.isawaitable(value):
+            return value
+        result: Dict[str, Any] = {}
+        error: Dict[str, BaseException] = {}
+
+        def _worker() -> None:
+            try:
+                result["value"] = asyncio.run(value)
+            except BaseException as exc:
+                error["exc"] = exc
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(value)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        thread.join()
+        if "exc" in error:
+            raise error["exc"]
+        return result.get("value")
 
     @staticmethod
     def _clean_render_path(value: Any) -> str:
@@ -2138,6 +2746,30 @@ class OpenListMonitor(_PluginBase):
             if text in valid_types and text not in media_types:
                 media_types.append(text)
         return media_types or valid_types
+
+    @staticmethod
+    def _parse_recognition_rewrite_rules(value: Any) -> List[Dict[str, str]]:
+        raw = str(value or "").replace("\r", "")
+        rules = []
+        seen_sources = set()
+        separators = ("=>", "->", "|", "=")
+        for line in raw.splitlines():
+            text = line.strip()
+            if not text or text.startswith("#"):
+                continue
+            source = ""
+            target = ""
+            for separator in separators:
+                if separator in text:
+                    source, target = text.split(separator, 1)
+                    break
+            source = source.strip()
+            target = target.strip()
+            if not source or not target or source in seen_sources:
+                continue
+            seen_sources.add(source)
+            rules.append({"source": source, "target": target})
+        return rules
 
     @staticmethod
     def _normalize_path(value: Any) -> str:
