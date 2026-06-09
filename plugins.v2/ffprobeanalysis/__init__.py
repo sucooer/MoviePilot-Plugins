@@ -30,7 +30,7 @@ class FFprobeAnalysis(_PluginBase):
     plugin_name = "FFprobe分析"
     plugin_desc = "整理重命名时调用 ffprobe，补全命名模板中的 videoFormat、videoCodec、videoBit、audioCodec、fps、effect，支持 STRM 与 OpenList"
     plugin_icon = "ffmpeg.png"
-    plugin_version = "0.2.2"
+    plugin_version = "0.2.3"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "ffprobeanalysis_"

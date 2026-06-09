@@ -31,7 +31,7 @@ class S3Backup(_PluginBase):
     plugin_name = "S3备份"
     plugin_desc = "定时通过 S3 备份数据库和配置文件，并支持从 S3 恢复。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/S3.png"
-    plugin_version = "0.2.4"
+    plugin_version = "0.2.5"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer"
     plugin_config_prefix = "s3backup_"
