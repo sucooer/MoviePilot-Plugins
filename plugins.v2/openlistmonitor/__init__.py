@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import inspect
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -34,7 +35,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.10"
+    plugin_version = "0.3.11"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -2279,16 +2280,99 @@ class OpenListMonitor(_PluginBase):
         if cached is not None:
             return cached
 
+        heuristic_candidates = self._build_heuristic_recognition_candidates(
+            fileitem=fileitem,
+            source_meta=source_meta,
+        )
         try:
             candidates = self._invoke_ai_recognition_candidates(fileitem, source_meta)
         except Exception as e:
             logger.warning("【OpenList 目录监控】AI识别调用失败: %s", e)
             candidates = []
 
-        normalized = self._normalize_ai_candidates(candidates)
+        normalized = self._normalize_ai_candidates(heuristic_candidates + candidates)
         with self._ai_recognition_cache_lock:
             self._ai_recognition_cache[cache_key] = normalized
         return normalized
+
+    def _build_heuristic_recognition_candidates(
+        self,
+        fileitem: schemas.FileItem,
+        source_meta: Any = None,
+    ) -> List[Dict[str, Any]]:
+        titles = []
+        source_path = str(getattr(fileitem, "path", "") or "").strip()
+        source_name = str(getattr(fileitem, "name", "") or Path(source_path).name).strip()
+        for value in (
+            source_name,
+            Path(source_path).stem if source_path else "",
+            Path(source_path).parent.name if source_path else "",
+            getattr(source_meta, "name", ""),
+            getattr(source_meta, "title", ""),
+        ):
+            title = self._extract_candidate_title(value)
+            if title and title not in titles:
+                titles.append(title)
+
+        media_type = self._normalize_ai_media_type(None, source_meta=source_meta)
+        season = getattr(source_meta, "begin_season", None) or 0
+        episode = getattr(source_meta, "begin_episode", None) or 0
+        candidates = []
+        for title in titles:
+            for variant in self._build_title_punctuation_variants(title):
+                candidates.append({
+                    "name": variant,
+                    "year": str(getattr(source_meta, "year", "") or ""),
+                    "media_type": (
+                        "tv" if media_type == MediaType.TV
+                        else "movie" if media_type == MediaType.MOVIE
+                        else "unknown"
+                    ),
+                    "season": season,
+                    "episode": episode,
+                    "confidence": 0.96 if variant != title else 0.72,
+                    "reason": "filename heuristic punctuation variant",
+                })
+        return candidates
+
+    @staticmethod
+    def _extract_candidate_title(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = Path(text).stem if "/" in text or "\\" in text else text
+        text = re.sub(r"^\s*(?:\[[^\]]+\]|【[^】]+】)\s*", "", text)
+        while True:
+            stripped = re.sub(r"\s*(?:\[[^\]]+\]|【[^】]+】)\s*$", "", text).strip()
+            if stripped == text:
+                break
+            text = stripped
+        text = re.sub(r"\s+-\s+\d{1,4}\b.*$", "", text).strip()
+        text = re.sub(r"\s+(?:S\d{1,2}E\d{1,4}|E\d{1,4})\b.*$", "", text, flags=re.I).strip()
+        text = re.sub(r"\s+", " ", text).strip(" -_.")
+        return text
+
+    @staticmethod
+    def _build_title_punctuation_variants(title: str) -> List[str]:
+        clean_title = " ".join(str(title or "").split()).strip()
+        if not clean_title:
+            return []
+        variants = [clean_title]
+        if not clean_title.endswith(("!?", "?!", "！?", "？！", "!", "?", "！", "？")):
+            variants.extend([
+                f"{clean_title}!?",
+                f"{clean_title}?!",
+                f"{clean_title}！?",
+            ])
+        elif clean_title.endswith(("!", "！")):
+            variants.append(f"{clean_title}?")
+        elif clean_title.endswith(("?", "？")):
+            variants.append(f"{clean_title}!")
+        deduped = []
+        for item in variants:
+            if item not in deduped:
+                deduped.append(item)
+        return deduped
 
     def _invoke_ai_recognition_candidates(
         self,
