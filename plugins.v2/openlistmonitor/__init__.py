@@ -35,7 +35,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.12"
+    plugin_version = "0.3.13"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -89,7 +89,7 @@ class OpenListMonitor(_PluginBase):
     OPENLIST_MAX_LIST_PAGE_SIZE = 500
     DIRECTORY_VISIBLE_RETRIES = 6
     DIRECTORY_VISIBLE_INTERVAL = 2
-    AI_RECOGNITION_MIN_CONFIDENCE = 0.45
+    AI_RECOGNITION_MIN_CONFIDENCE = 0.70
     AI_RECOGNITION_MAX_CANDIDATES = 10
 
     VIDEO_EXTENSIONS = {
@@ -1220,7 +1220,7 @@ class OpenListMonitor(_PluginBase):
                     force=True,
                     background=self._background_transfer,
                     manual=False,
-                    sync_extra_files=self._sync_extra_files,
+                    sync_extra_files=False,
                 )
                 if state:
                     transferred_records.add(self._record_key(file_info))
@@ -1232,7 +1232,11 @@ class OpenListMonitor(_PluginBase):
                     )
                     extra_count = 0
                     extra_names = file_info.get("extra_file_names") or []
-                    if self._sync_extra_files and extra_names:
+                    target_dirs = transfer_options.get("preview_target_dirs") or []
+                    if target_dirs:
+                        source_dir = Path(str(file_info.get("path") or "")).parent.as_posix()
+                        self._save_video_target_mapping(source_dir, target_dirs[0])
+                    if self._sync_extra_files:
                         extra_count = self._transfer_extra_files(
                             file_info=file_info,
                             transfer_options=transfer_options,
@@ -1240,10 +1244,6 @@ class OpenListMonitor(_PluginBase):
                             target_storage=target_storage,
                             transfer_type=transfer_type,
                         )
-                        target_dirs = transfer_options.get("preview_target_dirs") or []
-                        if target_dirs:
-                            source_dir = Path(str(file_info.get("path") or "")).parent.as_posix()
-                            self._save_video_target_mapping(source_dir, target_dirs[0])
                     logger.info(
                         "【OpenList 目录监控】已提交整理: %s（含 %d 个附加文件）",
                         file_info["path"], extra_count,
@@ -1403,7 +1403,7 @@ class OpenListMonitor(_PluginBase):
                 background=False,
                 manual=False,
                 preview=True,
-                sync_extra_files=self._sync_extra_files,
+                sync_extra_files=False,
             )
         finally:
             try:
@@ -1419,14 +1419,15 @@ class OpenListMonitor(_PluginBase):
         target_storage: str,
         transfer_type: str,
     ) -> int:
-        extra_names = file_info.get("extra_file_names") or []
-        if not extra_names or target_storage != "alist":
+        extra_names = list(file_info.get("extra_file_names") or [])
+        if target_storage != "alist":
             return 0
 
         source_path = str(file_info.get("path") or "")
         source_dir = str(Path(source_path).parent.as_posix()) if source_path else ""
         if not source_dir:
             return 0
+        old_video_name = str(file_info.get("name") or Path(source_path).name)
 
         preview_target_dirs = transfer_options.get("preview_target_dirs") or []
         if not preview_target_dirs:
@@ -1434,7 +1435,6 @@ class OpenListMonitor(_PluginBase):
         target_dir = preview_target_dirs[0]
 
         video_new_name = transfer_options.get("video_new_name")
-        old_video_name = str(file_info.get("name") or Path(source_path).name)
         old_video_stem = os.path.splitext(old_video_name)[0]
         old_video_trunc = self._truncate_video_stem(old_video_stem.lower())
         new_video_stem = os.path.splitext(video_new_name)[0] if video_new_name else old_video_stem
@@ -1456,6 +1456,20 @@ class OpenListMonitor(_PluginBase):
         src_dir = self._normalize_path(source_dir)
         dst_dir = self._normalize_path(target_dir)
         if src_dir == dst_dir:
+            return 0
+
+        if not extra_names:
+            extra_names = self._find_matching_extra_names(
+                base_url=base_url,
+                headers=headers,
+                source_dir=src_dir,
+                video_name=old_video_name,
+            )
+        if not extra_names:
+            logger.info(
+                "【OpenList 目录监控】未匹配到同目录附加文件: %s",
+                old_video_name,
+            )
             return 0
 
         extra_key = self.STORE_EXTRA_FILES_KEY
@@ -1551,6 +1565,35 @@ class OpenListMonitor(_PluginBase):
         )
         return True
 
+    def _find_matching_extra_names(
+        self,
+        base_url: str,
+        headers: Dict[str, str],
+        source_dir: str,
+        video_name: str,
+    ) -> List[str]:
+        listing, error = self._list_directory(base_url, headers, source_dir, refresh=True)
+        if error:
+            logger.warning(
+                "【OpenList 目录监控】重扫附加文件失败 %s: %s",
+                source_dir, error,
+            )
+            return []
+        sub_names = []
+        for item in listing.get("files") or []:
+            if item.get("is_dir"):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name and self._is_subtitle_ext(os.path.splitext(name)[1]):
+                sub_names.append(name)
+        matched = self._match_extra_files(video_name, sub_names)
+        if matched:
+            logger.info(
+                "【OpenList 目录监控】重扫匹配到 %d 个同目录附加文件: %s",
+                len(matched), video_name,
+            )
+        return matched
+
     def _save_video_target_mapping(self, source_dir: str, target_dir: str) -> None:
         clean_source = self._normalize_path(source_dir)
         clean_target = self._normalize_path(target_dir)
@@ -1604,8 +1647,20 @@ class OpenListMonitor(_PluginBase):
             if self._event.is_set():
                 break
             target_dir = self._lookup_video_target(source_dir)
+            if target_dir and not self._is_target_year_compatible(source_dir, target_dir):
+                logger.warning(
+                    "【OpenList 目录监控】残留字幕目标年份与源目录不一致，跳过缓存目标: %s -> %s",
+                    source_dir, target_dir,
+                )
+                target_dir = None
             if not target_dir:
                 target_dir = self._lookup_video_target_from_history(source_dir)
+                if target_dir and not self._is_target_year_compatible(source_dir, target_dir):
+                    logger.warning(
+                        "【OpenList 目录监控】残留字幕目标年份与源目录不一致，跳过历史目标: %s -> %s",
+                        source_dir, target_dir,
+                    )
+                    target_dir = None
                 if target_dir:
                     self._save_video_target_mapping(source_dir, target_dir)
                     logger.info(
@@ -2770,6 +2825,18 @@ class OpenListMonitor(_PluginBase):
                     mediainfo.type.value,
                 )
                 continue
+            if not self._is_ai_recognition_year_compatible(raw_text, candidate, mediainfo):
+                failed_candidates.append(
+                    f"{self._format_ai_candidate(candidate)}: 年份与源路径不一致"
+                )
+                logger.info(
+                    "【OpenList 目录监控】AI识别命中但年份与源路径不一致，跳过: %s -> %s，源年份=%s，命中年份=%s",
+                    source_name or source_path,
+                    getattr(mediainfo, "title_year", "") or getattr(mediainfo, "title", ""),
+                    ",".join(self._extract_plausible_years(raw_text)) or "-",
+                    ",".join(self._extract_ai_result_years(candidate, mediainfo)) or "-",
+                )
+                continue
 
             logger.info(
                 "【OpenList 目录监控】AI识别兜底命中: %s -> %s，置信度 %.2f，TMDB %s",
@@ -3018,7 +3085,9 @@ class OpenListMonitor(_PluginBase):
 4. 如果能从文件名判断季/集，填 season/episode；否则填 0。
 5. media_type 只能是 movie、tv、unknown。
 6. 罗马音标题里的 !、?、:、- 等符号可能是正式标题的一部分，需要保留一个带正确符号的候选。
-7. 按最可能命中的顺序排列，confidence 范围为 0 到 1。""",
+7. 如果原始路径或标题包含四位年份，候选 year 必须与该年份一致；不要把年份不同的旧作品作为候选。
+8. 不要只根据单个词或后缀联想作品，必须确认完整罗马音标题是该作品的正式名或常用别名。
+9. 按最可能命中的顺序排列，confidence 范围为 0 到 1。""",
                 ),
                 (
                     "human",
@@ -3136,6 +3205,72 @@ MoviePilot 当前解析提示：
         if year:
             label = f"{label}({year})"
         return f"{label}/{media_type}/{confidence:.2f}"
+
+    @classmethod
+    def _is_ai_recognition_year_compatible(
+        cls,
+        source_text: Any,
+        candidate: Dict[str, Any],
+        mediainfo: Any,
+    ) -> bool:
+        source_years = set(cls._extract_plausible_years(source_text))
+        if not source_years:
+            return True
+        result_years = set(cls._extract_ai_result_years(candidate, mediainfo))
+        if not result_years:
+            return False
+        return bool(source_years & result_years)
+
+    @classmethod
+    def _extract_ai_result_years(
+        cls,
+        candidate: Dict[str, Any],
+        mediainfo: Any,
+    ) -> List[str]:
+        years = []
+        for value in (
+            getattr(mediainfo, "year", ""),
+            getattr(mediainfo, "title_year", ""),
+            getattr(mediainfo, "release_date", ""),
+            getattr(mediainfo, "first_air_date", ""),
+            getattr(mediainfo, "premiered", ""),
+        ):
+            years.extend(cls._extract_plausible_years(value))
+        if not years:
+            years.extend(cls._extract_plausible_years(candidate.get("year")))
+        return cls._dedupe_values(years)
+
+    @classmethod
+    def _is_target_year_compatible(cls, source_path: Any, target_path: Any) -> bool:
+        source_years = set(cls._extract_plausible_years(source_path))
+        if not source_years:
+            return True
+        target_years = set(cls._extract_plausible_years(target_path))
+        if not target_years:
+            return True
+        return bool(source_years & target_years)
+
+    @staticmethod
+    def _extract_plausible_years(value: Any) -> List[str]:
+        text = str(value or "")
+        if not text:
+            return []
+        current_year = datetime.now().year
+        years = []
+        for year in re.findall(r"(?<!\d)(?:19\d{2}|20\d{2})(?!\d)", text):
+            number = int(year)
+            if 1900 <= number <= current_year + 2 and year not in years:
+                years.append(year)
+        return years
+
+    @staticmethod
+    def _dedupe_values(values: List[Any]) -> List[str]:
+        deduped = []
+        for value in values:
+            text = str(value or "").strip()
+            if text and text not in deduped:
+                deduped.append(text)
+        return deduped
 
     @staticmethod
     def _build_ai_meta_hint(meta: Any) -> Dict[str, Any]:

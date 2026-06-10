@@ -88,3 +88,70 @@ def test_ai_candidates_include_parent_dirs_and_keep_top_ten(monkeypatch):
     assert len(candidates) == plugin.AI_RECOGNITION_MAX_CANDIDATES
     assert "Kusuriya no Hitorigoto" in heuristic_names
     assert "Candidate 0" in names
+
+
+def test_ai_recognition_rejects_mismatched_source_year():
+    plugin = OpenListMonitor()
+
+    class DummyMediaInfo:
+        year = "2014"
+        title_year = "七大罪 (2014)"
+
+    assert not plugin._is_ai_recognition_year_compatible(
+        "/downloads/[MagicStar] Kujou no Taizai 2026/Kujou.no.Taizai.EP01.mkv",
+        {"name": "The Seven Deadly Sins", "year": "2026"},
+        DummyMediaInfo(),
+    )
+
+
+def test_leftover_subtitle_target_rejects_mismatched_year():
+    plugin = OpenListMonitor()
+
+    assert not plugin._is_target_year_compatible(
+        "/downloads/[MagicStar] Kujou no Taizai 2026",
+        "/library/番剧/七大罪 (2014) {tmdb-62104}/Season 01",
+    )
+    assert plugin._is_target_year_compatible(
+        "/downloads/[MagicStar] Kujou no Taizai 2026",
+        "/library/番剧/Kujou no Taizai/Season 01",
+    )
+
+
+def test_rescan_extra_files_matches_subtitles_after_video_move(monkeypatch):
+    plugin = OpenListMonitor()
+
+    monkeypatch.setattr(
+        plugin,
+        "_list_directory",
+        lambda base_url, headers, path, refresh=None: (
+            {
+                "files": [
+                    {
+                        "name": "Kujou.no.Taizai.EP01.1080p.NF.WEB-DL.Chs.srt",
+                        "is_dir": False,
+                    },
+                    {
+                        "name": "Kujou.no.Taizai.EP01.1080p.NF.WEB-DL.Eng.srt",
+                        "is_dir": False,
+                    },
+                    {
+                        "name": "Other.Show.EP01.srt",
+                        "is_dir": False,
+                    },
+                ]
+            },
+            None,
+        ),
+    )
+
+    matched = plugin._find_matching_extra_names(
+        "",
+        {},
+        "/downloads/Kujou no Taizai 2026",
+        "Kujou.no.Taizai.EP01.1080p.NF.WEB-DL.mkv",
+    )
+
+    assert matched == [
+        "Kujou.no.Taizai.EP01.1080p.NF.WEB-DL.Chs.srt",
+        "Kujou.no.Taizai.EP01.1080p.NF.WEB-DL.Eng.srt",
+    ]
