@@ -47,6 +47,50 @@ def test_configured_video_extensions_do_not_filter_subtitles(monkeypatch):
     assert not plugin._is_video_ext(".ass")
 
 
+def test_move_mode_does_not_filter_recorded_subtitle_extras(monkeypatch):
+    """Move mode must retry visible subtitle extras even if old records exist."""
+    plugin = OpenListMonitor()
+    plugin._extensions = ".mp4"
+    plugin._min_file_size_mb = 10
+    plugin._recursive = False
+    plugin._transfer_type = "move"
+
+    recorded_subtitle = "/source|Show.S01E01.ass"
+    monkeypatch.setattr(
+        plugin,
+        "get_data",
+        lambda key: [recorded_subtitle]
+        if key == plugin.STORE_EXTRA_FILES_KEY
+        else [],
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_list_directory",
+        lambda base_url, headers, path: (
+            {
+                "files": [
+                    {
+                        "name": "Show.S01E01.mp4",
+                        "size": 100 * 1024 * 1024,
+                        "is_dir": False,
+                    },
+                    {
+                        "name": "Show.S01E01.ass",
+                        "size": 100 * 1024,
+                        "is_dir": False,
+                    },
+                ]
+            },
+            None,
+        ),
+    )
+
+    stats = {"errors": [], "dirs": 0, "files": 0}
+    files = plugin._scan_directory("", {}, "/source", 0, stats)
+
+    assert files[0]["extra_file_names"] == ["Show.S01E01.ass"]
+
+
 def test_ai_title_hints_clean_romanized_symbol_names():
     plugin = OpenListMonitor()
 

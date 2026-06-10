@@ -35,7 +35,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.13"
+    plugin_version = "0.3.14"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -1089,10 +1089,13 @@ class OpenListMonitor(_PluginBase):
 
             extra_file_names = self._match_extra_files(name, sub_names)
 
-            unprocessed_extra = [
-                en for en in extra_file_names
-                if self._record_key({"path": f"{clean_path.rstrip('/')}/{en}" if clean_path != "/" else f"/{en}", "name": en}) not in already_extra
-            ]
+            if self._transfer_type == "move":
+                unprocessed_extra = extra_file_names
+            else:
+                unprocessed_extra = [
+                    en for en in extra_file_names
+                    if self._record_key({"path": f"{clean_path.rstrip('/')}/{en}" if clean_path != "/" else f"/{en}", "name": en}) not in already_extra
+                ]
 
             new_files.append({
                 "path": item_path,
@@ -1479,7 +1482,11 @@ class OpenListMonitor(_PluginBase):
         for extra_name in extra_names:
             extra_path = f"{src_dir.rstrip('/')}/{extra_name}" if src_dir != "/" else f"/{extra_name}"
             extra_key_val = self._record_key({"path": extra_path, "name": extra_name})
-            if extra_key_val in extra_records:
+            if transfer_type != "move" and extra_key_val in extra_records:
+                logger.debug(
+                    "【OpenList 目录监控】附加文件已记录，跳过重复复制: %s",
+                    extra_path,
+                )
                 continue
 
             if not self._move_alist_extra_file(
@@ -1589,8 +1596,8 @@ class OpenListMonitor(_PluginBase):
         matched = self._match_extra_files(video_name, sub_names)
         if matched:
             logger.info(
-                "【OpenList 目录监控】重扫匹配到 %d 个同目录附加文件: %s",
-                len(matched), video_name,
+                "【OpenList 目录监控】重扫为主视频 %s 匹配到 %d 个同目录附加文件: %s",
+                video_name, len(matched), ", ".join(matched[:5]),
             )
         return matched
 
@@ -1627,7 +1634,11 @@ class OpenListMonitor(_PluginBase):
             return 0
 
         extra_key = self.STORE_EXTRA_FILES_KEY
-        already_done = set(self.get_data(extra_key) or [])
+        already_done = (
+            set()
+            if self._transfer_type == "move"
+            else set(self.get_data(extra_key) or [])
+        )
         leftovers = []
         seen_paths = set()
 
