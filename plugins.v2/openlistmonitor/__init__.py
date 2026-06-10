@@ -35,7 +35,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.11"
+    plugin_version = "0.3.12"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -82,12 +82,15 @@ class OpenListMonitor(_PluginBase):
 
     STORE_RESULT_KEY = "last_result"
     STORE_TRANSFERRED_KEY = "transferred_files"
+    STORE_EXTRA_FILES_KEY = "transferred_extra_files"
+    STORE_VIDEO_TARGETS_KEY = "video_target_mapping"
     LEGACY_PLUGIN_ID = "AlistMonitor"
 
     OPENLIST_MAX_LIST_PAGE_SIZE = 500
     DIRECTORY_VISIBLE_RETRIES = 6
     DIRECTORY_VISIBLE_INTERVAL = 2
-    AI_RECOGNITION_MIN_CONFIDENCE = 0.55
+    AI_RECOGNITION_MIN_CONFIDENCE = 0.45
+    AI_RECOGNITION_MAX_CANDIDATES = 10
 
     VIDEO_EXTENSIONS = {
         ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v",
@@ -95,6 +98,10 @@ class OpenListMonitor(_PluginBase):
         ".rmvb", ".3gp", ".vob", ".mpeg", ".mpg", ".asf", ".strm", ".tp", ".f4v",
     }
     DEFAULT_RESIDUAL_FILE_EXTENSIONS = ".jpg,.jpeg,.png,.webp,.gif,.bmp,.txt,.nfo"
+
+    SUBTITLE_EXTENSIONS = {
+        ".srt", ".ass", ".ssa", ".sub", ".idx", ".sup", ".pgs", ".vtt", ".smi", ".usf", ".txt",
+    }
 
     def __init__(self):
         super().__init__()
@@ -780,6 +787,7 @@ class OpenListMonitor(_PluginBase):
             ("延后处理数", str(last_result.get("limited_files", 0))),
             ("跳过媒体类型", str(last_result.get("skipped_type", 0))),
             ("已整理数", str(last_result.get("transferred", 0))),
+            ("已同步附加文件", str(last_result.get("transferred_extra", 0))),
             ("AI兜底整理", str(last_result.get("ai_recognition_fallback", 0))),
             ("已清理残留文件", str(last_result.get("cleaned_files", 0))),
             ("已清理空目录", str(last_result.get("cleaned_dirs", 0))),
@@ -973,6 +981,10 @@ class OpenListMonitor(_PluginBase):
                 transferred = self._transfer_files(pending_files, stats)
                 stats["transferred"] = transferred
 
+            leftover_extra = self._process_leftover_subtitles(
+                base_url=base_url, headers=headers, paths=paths, stats=stats,
+            )
+
             if self._should_clean_empty_dirs() and scanned_dirs:
                 cleaned_dirs, cleaned_files = self._cleanup_empty_source_dirs(
                     base_url=base_url,
@@ -987,6 +999,7 @@ class OpenListMonitor(_PluginBase):
                 message = (
                     f"检查完成，发现 {stats['new_files']} 个新文件，"
                     f"已整理 {stats['transferred']} 个"
+                    f"{self._format_extra_files(stats)}"
                     f"{self._format_skipped_type(stats)}"
                     f"{self._format_limited_files(stats)}"
                     f"{self._format_cleaned_files(stats)}"
@@ -997,6 +1010,7 @@ class OpenListMonitor(_PluginBase):
                 message = (
                     f"检查完成，发现 {stats['new_files']} 个新文件，"
                     f"已整理 {stats['transferred']} 个"
+                    f"{self._format_extra_files(stats)}"
                     f"{self._format_skipped_type(stats)}"
                     f"{self._format_cleaned_files(stats)}"
                     f"{self._format_cleaned_dirs(stats)}"
@@ -1033,6 +1047,17 @@ class OpenListMonitor(_PluginBase):
 
         processed_key = self._get_processed_store_key()
         already_processed = set(self.get_data(processed_key) or [])
+        extra_processed_key = self.STORE_EXTRA_FILES_KEY
+        already_extra = set(self.get_data(extra_processed_key) or [])
+
+        sub_names = []
+        for item in file_items:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            ext = os.path.splitext(name)[1]
+            if self._is_subtitle_ext(ext):
+                sub_names.append(name)
 
         for item in file_items:
             name = str(item.get("name") or "").strip()
@@ -1044,7 +1069,7 @@ class OpenListMonitor(_PluginBase):
                 continue
 
             ext = os.path.splitext(name)[1].lower()
-            if not self._is_media_ext(ext):
+            if not self._is_video_ext(ext):
                 continue
 
             item_path = (
@@ -1062,6 +1087,13 @@ class OpenListMonitor(_PluginBase):
                 else:
                     continue
 
+            extra_file_names = self._match_extra_files(name, sub_names)
+
+            unprocessed_extra = [
+                en for en in extra_file_names
+                if self._record_key({"path": f"{clean_path.rstrip('/')}/{en}" if clean_path != "/" else f"/{en}", "name": en}) not in already_extra
+            ]
+
             new_files.append({
                 "path": item_path,
                 "name": name,
@@ -1069,6 +1101,7 @@ class OpenListMonitor(_PluginBase):
                 "size_mb": round(size_mb, 1),
                 "ext": ext,
                 "monitor_root": monitor_root,
+                "extra_file_names": unprocessed_extra,
             })
 
         if self._recursive and depth < self._max_depth:
@@ -1197,7 +1230,24 @@ class OpenListMonitor(_PluginBase):
                         file_info=file_info,
                         transfer_options=transfer_options,
                     )
-                    logger.info("【OpenList 目录监控】已提交整理: %s", file_info["path"])
+                    extra_count = 0
+                    extra_names = file_info.get("extra_file_names") or []
+                    if self._sync_extra_files and extra_names:
+                        extra_count = self._transfer_extra_files(
+                            file_info=file_info,
+                            transfer_options=transfer_options,
+                            stats=stats,
+                            target_storage=target_storage,
+                            transfer_type=transfer_type,
+                        )
+                        target_dirs = transfer_options.get("preview_target_dirs") or []
+                        if target_dirs:
+                            source_dir = Path(str(file_info.get("path") or "")).parent.as_posix()
+                            self._save_video_target_mapping(source_dir, target_dirs[0])
+                    logger.info(
+                        "【OpenList 目录监控】已提交整理: %s（含 %d 个附加文件）",
+                        file_info["path"], extra_count,
+                    )
                 else:
                     error = str(message or "整理失败")
                     stats["errors"].append({"path": file_info["path"], "error": error})
@@ -1312,7 +1362,16 @@ class OpenListMonitor(_PluginBase):
             if media_type_error:
                 return False, media_type_error, True, transfer_options
 
-        for target_dir in self._get_preview_target_dirs(preview_data):
+        preview_target_dirs = self._get_preview_target_dirs(preview_data)
+        transfer_options["preview_target_dirs"] = preview_target_dirs
+        new_video_name = None
+        for item in preview_data.get("items") or []:
+            target = str(item.get("target") or "")
+            if self._is_video_ext(Path(target).suffix):
+                new_video_name = Path(target).name
+                break
+        transfer_options["video_new_name"] = new_video_name
+        for target_dir in preview_target_dirs:
             state, message = self._ensure_alist_directory(target_dir)
             if not state:
                 return False, message, False, transfer_options
@@ -1351,6 +1410,399 @@ class OpenListMonitor(_PluginBase):
                 transfer_chain.jobview.remove_task(fileitem)
             except Exception as e:
                 logger.debug("【OpenList 目录监控】清理预览任务失败: %s", e)
+
+    def _transfer_extra_files(
+        self,
+        file_info: Dict[str, Any],
+        transfer_options: Dict[str, Any],
+        stats: Dict[str, Any],
+        target_storage: str,
+        transfer_type: str,
+    ) -> int:
+        extra_names = file_info.get("extra_file_names") or []
+        if not extra_names or target_storage != "alist":
+            return 0
+
+        source_path = str(file_info.get("path") or "")
+        source_dir = str(Path(source_path).parent.as_posix()) if source_path else ""
+        if not source_dir:
+            return 0
+
+        preview_target_dirs = transfer_options.get("preview_target_dirs") or []
+        if not preview_target_dirs:
+            return 0
+        target_dir = preview_target_dirs[0]
+
+        video_new_name = transfer_options.get("video_new_name")
+        old_video_name = str(file_info.get("name") or Path(source_path).name)
+        old_video_stem = os.path.splitext(old_video_name)[0]
+        old_video_trunc = self._truncate_video_stem(old_video_stem.lower())
+        new_video_stem = os.path.splitext(video_new_name)[0] if video_new_name else old_video_stem
+
+        conf = self._get_alist_conf()
+        if not conf:
+            return 0
+        base_url = self._get_alist_base_url(conf)
+        headers = self._get_alist_auth_header(conf)
+        if not base_url or not headers:
+            return 0
+
+        if not self._ensure_alist_directory(target_dir)[0]:
+            logger.warning(
+                "【OpenList 目录监控】字幕目标目录创建失败: %s", target_dir,
+            )
+            return 0
+
+        src_dir = self._normalize_path(source_dir)
+        dst_dir = self._normalize_path(target_dir)
+        if src_dir == dst_dir:
+            return 0
+
+        extra_key = self.STORE_EXTRA_FILES_KEY
+        extra_records = set(self.get_data(extra_key) or [])
+        success_count = 0
+
+        for extra_name in extra_names:
+            extra_path = f"{src_dir.rstrip('/')}/{extra_name}" if src_dir != "/" else f"/{extra_name}"
+            extra_key_val = self._record_key({"path": extra_path, "name": extra_name})
+            if extra_key_val in extra_records:
+                continue
+
+            if not self._move_alist_extra_file(
+                base_url=base_url,
+                headers=headers,
+                src_dir=src_dir,
+                name=extra_name,
+                dst_dir=dst_dir,
+                old_video_stem=old_video_trunc,
+                new_video_stem=new_video_stem,
+                transfer_type=transfer_type,
+            ):
+                logger.warning(
+                    "【OpenList 目录监控】附加文件移动失败: %s", extra_name,
+                )
+                continue
+
+            extra_records.add(extra_key_val)
+            success_count += 1
+
+        self.save_data(extra_key, sorted(extra_records))
+        if success_count:
+            logger.info(
+                "【OpenList 目录监控】已移动 %d 个附加文件到: %s",
+                success_count, dst_dir,
+            )
+            stats.setdefault("transferred_extra", 0)
+            stats["transferred_extra"] = int(stats["transferred_extra"]) + success_count
+        return success_count
+
+    def _move_alist_extra_file(
+        self,
+        base_url: str,
+        headers: Dict[str, str],
+        src_dir: str,
+        name: str,
+        dst_dir: str,
+        old_video_stem: str,
+        new_video_stem: str,
+        transfer_type: str,
+    ) -> bool:
+        extra_stem, ext = os.path.splitext(name)
+        if extra_stem.lower().startswith(old_video_stem.lower()):
+            suffix = extra_stem[len(old_video_stem):]
+            suffix = self._clean_extra_file_suffix(suffix)
+        else:
+            suffix = ""
+        new_name = f"{new_video_stem}{suffix}{ext}"
+        endpoint = "/api/fs/move" if transfer_type == "move" else "/api/fs/copy"
+        resp = self._post_alist(
+            base_url,
+            endpoint,
+            headers,
+            json={
+                "src_dir": src_dir,
+                "names": [name],
+                "dst_dir": dst_dir,
+            },
+        )
+        if not resp:
+            logger.warning("【OpenList 目录监控】移动附加文件无响应: %s", name)
+            return False
+        if resp.status_code != 200:
+            logger.warning("【OpenList 目录监控】移动附加文件失败 %s: HTTP %s", name, resp.status_code)
+            return False
+        try:
+            result = resp.json()
+        except Exception as e:
+            logger.warning("【OpenList 目录监控】移动附加文件解析响应失败 %s: %s", name, e)
+            return False
+        if result.get("code") != 200:
+            logger.warning(
+                "【OpenList 目录监控】移动附加文件失败 %s: %s",
+                name, result.get("message") or "OpenList 返回错误",
+            )
+            return False
+        if new_name != name:
+            if not self._rename_alist_file(base_url, headers, dst_dir, name, new_name):
+                logger.warning("【OpenList 目录监控】附加文件重命名失败: %s -> %s", name, new_name)
+        logger.info(
+            "【OpenList 目录监控】已移动附加文件: %s -> %s/%s",
+            name, dst_dir, new_name,
+        )
+        return True
+
+    def _save_video_target_mapping(self, source_dir: str, target_dir: str) -> None:
+        clean_source = self._normalize_path(source_dir)
+        clean_target = self._normalize_path(target_dir)
+        if not clean_source or not clean_target or clean_source == clean_target:
+            return
+        mapping_key = self.STORE_VIDEO_TARGETS_KEY
+        mapping = dict(self.get_data(mapping_key) or {})
+        if mapping.get(clean_source) == clean_target:
+            return
+        mapping[clean_source] = clean_target
+        if len(mapping) > 1000:
+            for key in list(mapping.keys())[:-500]:
+                del mapping[key]
+        self.save_data(mapping_key, mapping)
+
+    def _lookup_video_target(self, source_dir: str) -> Optional[str]:
+        clean_source = self._normalize_path(source_dir)
+        if not clean_source:
+            return None
+        mapping = dict(self.get_data(self.STORE_VIDEO_TARGETS_KEY) or {})
+        return mapping.get(clean_source)
+
+    def _process_leftover_subtitles(
+        self,
+        base_url: str,
+        headers: Dict[str, str],
+        paths: List[str],
+        stats: Dict[str, Any],
+    ) -> int:
+        if not self._sync_extra_files:
+            return 0
+
+        extra_key = self.STORE_EXTRA_FILES_KEY
+        already_done = set(self.get_data(extra_key) or [])
+        leftovers = []
+        seen_paths = set()
+
+        for root_path in paths:
+            if self._event.is_set():
+                break
+            clean_root = self._normalize_path(root_path)
+            self._find_subtitle_files(
+                base_url, headers, clean_root, 0, already_done, leftovers, seen_paths,
+            )
+
+        if not leftovers:
+            return 0
+
+        success_count = 0
+        for sub_path, sub_name, source_dir in leftovers:
+            if self._event.is_set():
+                break
+            target_dir = self._lookup_video_target(source_dir)
+            if not target_dir:
+                target_dir = self._lookup_video_target_from_history(source_dir)
+                if target_dir:
+                    self._save_video_target_mapping(source_dir, target_dir)
+                    logger.info(
+                        "【OpenList 目录监控】残留字幕通过转移历史匹配到目标路径: %s -> %s",
+                        sub_path, target_dir,
+                    )
+
+            if not target_dir:
+                logger.info(
+                    "【OpenList 目录监控】残留字幕未匹配到目标路径，跳过: %s", sub_path,
+                )
+                continue
+
+            old_video_stem = os.path.splitext(sub_name)[0].lower()
+            trunc_stem = self._truncate_video_stem(old_video_stem)
+
+            extra_key_val = self._record_key({"path": sub_path, "name": sub_name})
+            extra_records = set(self.get_data(extra_key) or [])
+
+            if self._move_alist_extra_file(
+                base_url=base_url,
+                headers=headers,
+                src_dir=source_dir,
+                name=sub_name,
+                dst_dir=target_dir,
+                old_video_stem=trunc_stem,
+                new_video_stem=trunc_stem,
+                transfer_type=self._transfer_type,
+            ):
+                extra_records.add(extra_key_val)
+                self.save_data(extra_key, sorted(extra_records))
+                success_count += 1
+                stats.setdefault("transferred_extra", 0)
+                stats["transferred_extra"] = int(stats["transferred_extra"]) + 1
+
+        if success_count:
+            logger.info(
+                "【OpenList 目录监控】已整理 %d 个残留字幕文件", success_count,
+            )
+        return success_count
+
+    def _collect_target_roots(self) -> List[str]:
+        roots = []
+        rules = self._get_monitor_target_rules()
+        for rule in rules:
+            target = self._normalize_path(rule.get("target") or "")
+            if target and target not in roots:
+                roots.append(target)
+        if not roots:
+            target = self._normalize_path(self._target_path) if self._target_path else ""
+            if target:
+                roots.append(target)
+        return roots
+
+    def _clean_extra_file_suffix(self, suffix: str) -> str:
+        if not suffix:
+            return suffix
+        parts = suffix.split(".")
+        clean_parts = [
+            p for p in parts
+            if p.lower() in {
+                "chs", "cht", "chi", "eng", "en", "jpn", "ja",
+                "kor", "ko", "spa", "es", "fre", "fra", "fr",
+                "ger", "de", "ita", "it", "por", "pt", "pt-br",
+                "rus", "ru", "tha", "th", "vie", "vi", "ara", "ar",
+                "hin", "hi", "forced", "hi", "sdh", "cc", "default",
+                "pgs", "sup",
+            }
+        ]
+        return "." + ".".join(clean_parts) if clean_parts else suffix
+
+    def _lookup_video_target_from_history(self, source_dir: str) -> Optional[str]:
+        clean_source = self._normalize_path(source_dir)
+        if not clean_source:
+            return None
+        try:
+            import sqlite3
+            conn = sqlite3.connect("/config/user.db")
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT src, dest FROM transferhistory ORDER BY date DESC"
+            )
+            for src, dest in cursor.fetchall():
+                if not src or not dest:
+                    continue
+                src_parent = str(Path(src).parent.as_posix()) if src else ""
+                if src_parent and self._normalize_path(src_parent) == clean_source:
+                    dest_dir = str(Path(dest).parent.as_posix()) if dest else ""
+                    if dest_dir:
+                        conn.close()
+                        return self._normalize_path(dest_dir)
+            conn.close()
+        except Exception as e:
+            logger.debug(
+                "【OpenList 目录监控】查询转移历史失败: %s", e,
+            )
+        return None
+
+    def _find_subtitle_files(
+        self,
+        base_url: str,
+        headers: Dict[str, str],
+        path: str,
+        depth: int,
+        already_done: set,
+        leftovers: List[Tuple[str, str, str]],
+        seen_paths: set,
+    ) -> None:
+        clean_path = self._normalize_path(path)
+        if clean_path in seen_paths:
+            return
+        seen_paths.add(clean_path)
+
+        listing, error = self._list_directory(base_url, headers, clean_path)
+        if error:
+            return
+
+        items = listing.get("files", [])
+        dirs = []
+        sub_files = []
+        for item in items:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            if item.get("is_dir"):
+                dirs.append(name)
+            else:
+                ext = os.path.splitext(name)[1]
+                if self._is_subtitle_ext(ext):
+                    sub_files.append(name)
+
+        for sub_name in sub_files:
+            sub_path = (
+                f"{clean_path.rstrip('/')}/{sub_name}"
+                if clean_path != "/"
+                else f"/{sub_name}"
+            )
+            key = self._record_key({"path": sub_path, "name": sub_name})
+            if key in already_done:
+                continue
+            leftovers.append((sub_path, sub_name, clean_path))
+
+        if depth < self._max_depth:
+            for dir_name in dirs:
+                if self._event.is_set():
+                    break
+                child_path = (
+                    f"{clean_path.rstrip('/')}/{dir_name}"
+                    if clean_path != "/"
+                    else f"/{dir_name}"
+                )
+                if self._delay_seconds > 0 and self._event.wait(self._delay_seconds):
+                    break
+                self._find_subtitle_files(
+                    base_url, headers, child_path, depth + 1,
+                    already_done, leftovers, seen_paths,
+                )
+
+    def _rename_alist_file(
+        self, base_url: str, headers: Dict[str, str], dir_path: str, old_name: str, new_name: str,
+    ) -> bool:
+        clean_dir = self._normalize_path(dir_path)
+        file_path = f"{clean_dir.rstrip('/')}/{old_name}" if clean_dir != "/" else f"/{old_name}"
+        resp = self._post_alist(
+            base_url,
+            "/api/fs/rename",
+            headers,
+            json={"path": file_path, "name": new_name},
+        )
+        if not resp:
+            logger.warning(
+                "【OpenList 目录监控】重命名无响应: %s -> %s (path=%s)",
+                old_name, new_name, file_path,
+            )
+            return False
+        if resp.status_code != 200:
+            logger.warning(
+                "【OpenList 目录监控】重命名HTTP失败 %s -> %s (path=%s): HTTP %s",
+                old_name, new_name, file_path, resp.status_code,
+            )
+            return False
+        try:
+            result = resp.json()
+        except Exception as e:
+            logger.warning(
+                "【OpenList 目录监控】重命名解析失败 %s -> %s (path=%s): %s",
+                old_name, new_name, file_path, e,
+            )
+            return False
+        if result.get("code") != 200:
+            logger.warning(
+                "【OpenList 目录监控】重命名API失败 %s -> %s (path=%s): %s",
+                old_name, new_name, file_path,
+                result.get("message") or "OpenList 返回错误",
+            )
+            return False
+        return True
 
     @staticmethod
     def _format_preview_error(preview_data: Any) -> str:
@@ -1932,6 +2384,7 @@ class OpenListMonitor(_PluginBase):
             for key in (
                 "new_files",
                 "transferred",
+                "transferred_extra",
                 "cleaned_files",
                 "cleaned_dirs",
             )
@@ -1972,6 +2425,8 @@ class OpenListMonitor(_PluginBase):
             lines.append(f"延后处理：{int(data.get('limited_files') or 0)}")
         if int(data.get("skipped_type") or 0):
             lines.append(f"跳过媒体类型：{int(data.get('skipped_type') or 0)}")
+        if int(data.get("transferred_extra") or 0):
+            lines.append(f"同步附加文件：{int(data.get('transferred_extra') or 0)}")
         if int(data.get("cleaned_files") or 0):
             lines.append(f"清理残留文件：{int(data.get('cleaned_files') or 0)}")
         if int(data.get("cleaned_dirs") or 0):
@@ -1992,6 +2447,11 @@ class OpenListMonitor(_PluginBase):
             )
         except Exception as e:
             logger.warning("【OpenList 目录监控】发送完成通知失败: %s", e)
+
+    @staticmethod
+    def _format_extra_files(stats: Dict[str, Any]) -> str:
+        extra = int(stats.get("transferred_extra") or 0)
+        return f"，附加文件 {extra} 个" if extra else ""
 
     @staticmethod
     def _format_cleaned_files(stats: Dict[str, Any]) -> str:
@@ -2020,16 +2480,51 @@ class OpenListMonitor(_PluginBase):
             return "OpenList"
         return storage or "-"
 
-    def _is_media_ext(self, ext: str) -> bool:
+    def _get_configured_video_extensions(self) -> set:
+        if not self._extensions:
+            return set(self.VIDEO_EXTENSIONS)
+        configured = {
+            self._normalize_extension(item)
+            for item in self._extensions.replace(",", "\n").splitlines()
+            if str(item or "").strip()
+        }
+        return configured & self.VIDEO_EXTENSIONS
+
+    def _is_video_ext(self, ext: str) -> bool:
         ext = self._normalize_extension(ext)
-        if self._extensions:
-            allowed = set(
-                self._normalize_extension(e)
-                for e in self._extensions.replace(",", "\n").splitlines()
-                if e.strip()
-            )
-            return ext in allowed and ext in self.VIDEO_EXTENSIONS
-        return ext in self.VIDEO_EXTENSIONS
+        return ext in self._get_configured_video_extensions()
+
+    def _is_media_ext(self, ext: str) -> bool:
+        return self._is_video_ext(ext)
+
+    def _is_subtitle_ext(self, ext: str) -> bool:
+        return self._normalize_extension(ext) in self.SUBTITLE_EXTENSIONS
+
+    @staticmethod
+    def _match_extra_files(video_name: str, all_sub_names: List[str]) -> List[str]:
+        video_stem = os.path.splitext(video_name)[0].lower()
+        trunc_video_stem = OpenListMonitor._truncate_video_stem(video_stem)
+        matched = []
+        for sub_name in all_sub_names:
+            sub_stem = os.path.splitext(sub_name)[0].lower()
+            if sub_stem.startswith(trunc_video_stem):
+                suffix = sub_stem[len(trunc_video_stem):]
+                if not suffix or suffix[0] in "._- ":
+                    matched.append(sub_name)
+        return matched
+
+    @staticmethod
+    def _truncate_video_stem(stem: str) -> str:
+        m = re.search(r'(?:\.|(?<=_|-))s\d{1,2}e\d{1,4}', stem, re.I)
+        if m:
+            return stem[:m.end()]
+        m = re.search(r'(?:\.|(?<=_|-))ep?\d{1,4}', stem, re.I)
+        if m:
+            return stem[:m.end()]
+        m = re.search(r'(?:\.|(?<=_|-))\d{4}(?:\s*\.\s*\d{3,4}p)?', stem, re.I)
+        if m:
+            return stem[:m.start()]
+        return stem
 
     def _get_processed_store_key(self) -> str:
         return self.STORE_TRANSFERRED_KEY
@@ -2166,13 +2661,21 @@ class OpenListMonitor(_PluginBase):
             source_meta=base_meta,
         )
         if not candidates:
+            logger.info(
+                "【OpenList 目录监控】AI识别未生成候选: %s",
+                source_name or source_path,
+            )
             return None, None
 
         media_chain = MediaChain()
         raw_text = source_path or source_name
+        failed_candidates = []
         for candidate in candidates:
             confidence = self._to_float(candidate.get("confidence"), 0, 0, 1)
             if confidence < self.AI_RECOGNITION_MIN_CONFIDENCE:
+                failed_candidates.append(
+                    f"{self._format_ai_candidate(candidate)}: 置信度不足"
+                )
                 logger.debug(
                     "【OpenList 目录监控】AI识别候选置信度不足，跳过: %s %.2f",
                     candidate.get("name"),
@@ -2185,6 +2688,9 @@ class OpenListMonitor(_PluginBase):
                 source_meta=base_meta,
             )
             if media_type and media_type.value not in self._media_types:
+                failed_candidates.append(
+                    f"{self._format_ai_candidate(candidate)}: 媒体类型未启用"
+                )
                 logger.debug(
                     "【OpenList 目录监控】AI识别候选媒体类型未选择，跳过: %s %s",
                     candidate.get("name"),
@@ -2195,6 +2701,9 @@ class OpenListMonitor(_PluginBase):
             try:
                 meta = MetaInfo(raw_text)
             except Exception as e:
+                failed_candidates.append(
+                    f"{self._format_ai_candidate(candidate)}: 元数据构建失败"
+                )
                 logger.debug("【OpenList 目录监控】AI识别构建元数据失败: %s", e)
                 continue
 
@@ -2220,6 +2729,9 @@ class OpenListMonitor(_PluginBase):
                 meta.type = MediaType.TV
 
             if meta.type and meta.type.value not in self._media_types:
+                failed_candidates.append(
+                    f"{self._format_ai_candidate(candidate)}: 校验媒体类型未启用"
+                )
                 logger.debug(
                     "【OpenList 目录监控】AI识别候选校验类型未选择，跳过: %s %s",
                     candidate.get("name"),
@@ -2230,6 +2742,9 @@ class OpenListMonitor(_PluginBase):
             try:
                 mediainfo = media_chain.recognize_media(meta=meta, cache=False)
             except Exception as e:
+                failed_candidates.append(
+                    f"{self._format_ai_candidate(candidate)}: 二次校验异常"
+                )
                 logger.debug(
                     "【OpenList 目录监控】AI识别候选二次校验异常: %s - %s",
                     candidate.get("name"),
@@ -2237,12 +2752,18 @@ class OpenListMonitor(_PluginBase):
                 )
                 continue
             if not mediainfo:
+                failed_candidates.append(
+                    f"{self._format_ai_candidate(candidate)}: MoviePilot未命中"
+                )
                 logger.debug(
                     "【OpenList 目录监控】AI识别候选二次校验未命中: %s",
                     candidate.get("name"),
                 )
                 continue
             if mediainfo.type and mediainfo.type.value not in self._media_types:
+                failed_candidates.append(
+                    f"{self._format_ai_candidate(candidate)}: 命中结果类型未启用"
+                )
                 logger.info(
                     "【OpenList 目录监控】AI识别命中但媒体类型未选择，跳过: %s %s",
                     getattr(mediainfo, "title_year", "") or getattr(mediainfo, "title", ""),
@@ -2259,6 +2780,12 @@ class OpenListMonitor(_PluginBase):
             )
             return meta, mediainfo
 
+        if failed_candidates:
+            logger.info(
+                "【OpenList 目录监控】AI识别候选均未通过: %s，候选=%s",
+                source_name or source_path,
+                "；".join(failed_candidates[:self.AI_RECOGNITION_MAX_CANDIDATES]),
+            )
         return None, None
 
     def _should_ai_recognition_fallback(self, preview_data: Any) -> bool:
@@ -2303,16 +2830,24 @@ class OpenListMonitor(_PluginBase):
         titles = []
         source_path = str(getattr(fileitem, "path", "") or "").strip()
         source_name = str(getattr(fileitem, "name", "") or Path(source_path).name).strip()
-        for value in (
+        path_obj = Path(source_path) if source_path else None
+        source_values = [
             source_name,
+            Path(source_name).stem if source_name else "",
             Path(source_path).stem if source_path else "",
-            Path(source_path).parent.name if source_path else "",
             getattr(source_meta, "name", ""),
             getattr(source_meta, "title", ""),
-        ):
-            title = self._extract_candidate_title(value)
-            if title and title not in titles:
-                titles.append(title)
+        ]
+        if path_obj:
+            source_values.extend(
+                part for part in reversed(path_obj.parts[:-1])
+                if part and part not in {"/", ".", ".."}
+            )
+
+        for value in source_values:
+            for title in self._extract_candidate_title_hints(value):
+                if title and title not in titles:
+                    titles.append(title)
 
         media_type = self._normalize_ai_media_type(None, source_meta=source_meta)
         season = getattr(source_meta, "begin_season", None) or 0
@@ -2330,27 +2865,82 @@ class OpenListMonitor(_PluginBase):
                     ),
                     "season": season,
                     "episode": episode,
-                    "confidence": 0.96 if variant != title else 0.72,
+                    "confidence": 0.58 if variant != title else 0.55,
                     "reason": "filename heuristic punctuation variant",
                 })
         return candidates
+
+    @classmethod
+    def _extract_candidate_title_hints(cls, value: Any) -> List[str]:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        candidates = [
+            text,
+            re.sub(r"[._]+", " ", text),
+            re.sub(r"\s*[-_]\s*", " ", text),
+        ]
+        hints = []
+        for item in candidates:
+            title = cls._extract_candidate_title(item)
+            if (
+                title
+                and not cls._is_noise_candidate_title(title)
+                and title not in hints
+            ):
+                hints.append(title)
+        return hints
 
     @staticmethod
     def _extract_candidate_title(value: Any) -> str:
         text = str(value or "").strip()
         if not text:
             return ""
-        text = Path(text).stem if "/" in text or "\\" in text else text
+        text = Path(text).stem
         text = re.sub(r"^\s*(?:\[[^\]]+\]|【[^】]+】)\s*", "", text)
         while True:
             stripped = re.sub(r"\s*(?:\[[^\]]+\]|【[^】]+】)\s*$", "", text).strip()
             if stripped == text:
                 break
             text = stripped
+        text = re.sub(
+            r"\b(?:2160p|1080p|720p|480p|web[-_. ]?dl|webrip|bluray|bdrip|"
+            r"hdrip|x264|x265|h264|h265|hevc|avc|aac|flac)\b.*$",
+            "",
+            text,
+            flags=re.I,
+        ).strip()
+        text = re.sub(r"\s+\.\s+", ".", text)
+        text = re.sub(r"(?:\.|(?<=\s))S\d{1,2}E\d{1,4}(?!\d)\b.*$", "", text, flags=re.I).strip()
+        text = re.sub(r"(?:_|-|\s)S\d{1,2}E\d{1,4}(?!\d)\b.*$", "", text, flags=re.I).strip()
+        text = re.sub(r"(?:\.|(?<=\s))EP?\d{1,4}(?!\d)\b.*$", "", text, flags=re.I).strip()
+        text = re.sub(r"(?:_|-|\s)EP?\d{1,4}(?!\d)\b.*$", "", text, flags=re.I).strip()
+        text = re.sub(r"(?:\.|(?<=\s))\d{4}\s*\.\s*\d{3,4}p\b.*$", "", text, flags=re.I).strip()
+        text = re.sub(r"\s+season\s*\d{1,2}\b.*$", "", text, flags=re.I).strip()
+        text = re.sub(r"\s*\.\s*", " ", text)
+        text = re.sub(r"[_]+", " ", text)
         text = re.sub(r"\s+-\s+\d{1,4}\b.*$", "", text).strip()
-        text = re.sub(r"\s+(?:S\d{1,2}E\d{1,4}|E\d{1,4})\b.*$", "", text, flags=re.I).strip()
+        text = re.sub(
+            r"\s+(?:S\d{1,2}E\d{1,4}(?!\d)|EP?\d{1,4}(?!\d)|\d{1,4})\b.*$",
+            "",
+            text,
+            flags=re.I,
+        ).strip()
         text = re.sub(r"\s+", " ", text).strip(" -_.")
         return text
+
+    @staticmethod
+    def _is_noise_candidate_title(value: Any) -> bool:
+        text = str(value or "").strip().lower()
+        if not text:
+            return True
+        return bool(re.fullmatch(
+            r"(?:season\s*)?\d{1,2}|s\d{1,2}|episode\s*\d{1,4}|ep?\d{1,4}|"
+            r"2160p|1080p|720p|480p|web[- ]?dl|downloads?|complete|movie|tv|"
+            r"anime|videos?|episodes?|sample|subtitles?|番剧|电影|剧集|season",
+            text,
+            flags=re.I,
+        ))
 
     @staticmethod
     def _build_title_punctuation_variants(title: str) -> List[str]:
@@ -2358,6 +2948,16 @@ class OpenListMonitor(_PluginBase):
         if not clean_title:
             return []
         variants = [clean_title]
+        ascii_mark_title = (
+            clean_title.replace("！", "!")
+            .replace("？", "?")
+            .replace("：", ":")
+        )
+        if ascii_mark_title != clean_title:
+            variants.append(ascii_mark_title)
+        no_trailing_mark = clean_title.rstrip("!?！？")
+        if no_trailing_mark and no_trailing_mark != clean_title:
+            variants.append(no_trailing_mark)
         if not clean_title.endswith(("!?", "?!", "！?", "？！", "!", "?", "！", "？")):
             variants.extend([
                 f"{clean_title}!?",
@@ -2409,15 +3009,16 @@ class OpenListMonitor(_PluginBase):
                     "system",
                     """你是 MoviePilot 的影视文件名识别兜底助手。
 
-请根据原始标题、路径和 MoviePilot 当前解析提示，生成最多 5 个适合交给 MoviePilot/TMDB 再次识别的候选作品名。
+请根据原始标题、路径、清洗提示和 MoviePilot 当前解析提示，生成最多 10 个适合交给 MoviePilot/TMDB 再次识别的候选作品名。
 
 规则：
 1. 候选 name 只保留作品名或常用正式别名，不要包含发布组、集数、分辨率、编码、字幕、网盘目录等噪音。
-2. 对动画、日剧、罗马音标题，可给出你有把握的正式英文名、罗马音标点版本、中文名或日文名。
+2. 优先输出 TMDB/MoviePilot 更容易搜到的标题：官方英文名、日文原名、中文常用名、带正确标点的罗马音、去标点罗马音。
 3. 不要编造不存在的作品；不确定时返回空候选或降低 confidence。
 4. 如果能从文件名判断季/集，填 season/episode；否则填 0。
 5. media_type 只能是 movie、tv、unknown。
-6. 按最可能命中的顺序排列，confidence 范围为 0 到 1。""",
+6. 罗马音标题里的 !、?、:、- 等符号可能是正式标题的一部分，需要保留一个带正确符号的候选。
+7. 按最可能命中的顺序排列，confidence 范围为 0 到 1。""",
                 ),
                 (
                     "human",
@@ -2426,6 +3027,9 @@ class OpenListMonitor(_PluginBase):
 
 原始路径：
 {path}
+
+清洗提示：
+{source_context}
 
 MoviePilot 当前解析提示：
 {meta_hint}
@@ -2446,6 +3050,7 @@ MoviePilot 当前解析提示：
             {
                 "title": str(getattr(fileitem, "name", "") or ""),
                 "path": str(getattr(fileitem, "path", "") or ""),
+                "source_context": self._build_ai_source_context(fileitem, source_meta),
                 "meta_hint": self._build_ai_meta_hint(source_meta),
                 "media_types": "、".join(self._media_types),
             },
@@ -2488,12 +3093,49 @@ MoviePilot 当前解析提示：
             normalized,
             key=lambda item: float(item.get("confidence") or 0),
             reverse=True,
-        )[:5]
+        )[:self.AI_RECOGNITION_MAX_CANDIDATES]
 
     @staticmethod
     def _clean_ai_candidate_name(value: Any) -> str:
         text = " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
         return text.strip(" []【】")
+
+    def _build_ai_source_context(
+        self,
+        fileitem: schemas.FileItem,
+        source_meta: Any = None,
+    ) -> Dict[str, Any]:
+        source_path = str(getattr(fileitem, "path", "") or "").strip()
+        source_name = str(getattr(fileitem, "name", "") or Path(source_path).name).strip()
+        path_obj = Path(source_path) if source_path else None
+        parent_dirs = []
+        if path_obj:
+            parent_dirs = [
+                part for part in path_obj.parts[:-1]
+                if part and part not in {"/", ".", ".."}
+            ][-4:]
+        title_hints = []
+        for value in [source_name, Path(source_name).stem if source_name else "", *parent_dirs]:
+            for title in self._extract_candidate_title_hints(value):
+                if title not in title_hints:
+                    title_hints.append(title)
+        return {
+            "filename": source_name,
+            "parent_dirs": parent_dirs,
+            "title_hints": title_hints[:self.AI_RECOGNITION_MAX_CANDIDATES],
+            "parsed_meta": self._build_ai_meta_hint(source_meta),
+        }
+
+    @staticmethod
+    def _format_ai_candidate(candidate: Dict[str, Any]) -> str:
+        name = str(candidate.get("name") or "-")
+        year = str(candidate.get("year") or "").strip()
+        media_type = str(candidate.get("media_type") or "unknown").strip()
+        confidence = float(candidate.get("confidence") or 0)
+        label = name
+        if year:
+            label = f"{label}({year})"
+        return f"{label}/{media_type}/{confidence:.2f}"
 
     @staticmethod
     def _build_ai_meta_hint(meta: Any) -> Dict[str, Any]:
