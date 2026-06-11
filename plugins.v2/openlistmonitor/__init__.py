@@ -35,7 +35,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.16"
+    plugin_version = "0.3.17"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -916,6 +916,7 @@ class OpenListMonitor(_PluginBase):
             "limited_files": 0,
             "skipped_type": 0,
             "transferred": 0,
+            "transferred_items": [],
             "ai_recognition_fallback": 0,
             "ai_recognition_fallback_items": [],
             "cleaned_files": 0,
@@ -1247,6 +1248,14 @@ class OpenListMonitor(_PluginBase):
                             target_storage=target_storage,
                             transfer_type=transfer_type,
                         )
+                    self._record_transfer_success(
+                        stats=stats,
+                        file_info=file_info,
+                        transfer_options=transfer_options,
+                        target_storage=target_storage,
+                        transfer_type=transfer_type,
+                        extra_count=extra_count,
+                    )
                     logger.info(
                         "【OpenList 目录监控】已提交整理: %s（含 %d 个附加文件）",
                         file_info["path"], extra_count,
@@ -1400,6 +1409,7 @@ class OpenListMonitor(_PluginBase):
 
         preview_target_dirs = self._get_preview_target_dirs(preview_data)
         transfer_options["preview_target_dirs"] = preview_target_dirs
+        transfer_options["preview_items"] = self._get_preview_items(preview_data)
         new_video_name = None
         for item in preview_data.get("items") or []:
             target = str(item.get("target") or "")
@@ -2089,6 +2099,16 @@ class OpenListMonitor(_PluginBase):
                     target_dirs.append(target_parent)
         return target_dirs
 
+    @staticmethod
+    def _get_preview_items(preview_data: Any) -> List[Dict[str, Any]]:
+        if not isinstance(preview_data, dict):
+            return []
+        items = []
+        for item in preview_data.get("items") or []:
+            if isinstance(item, dict):
+                items.append(dict(item))
+        return items
+
     def _get_top_level_transfer_options(
         self,
         preview_data: Any,
@@ -2572,6 +2592,72 @@ class OpenListMonitor(_PluginBase):
 
         return {"files": files}, ""
 
+    def _record_transfer_success(
+        self,
+        stats: Dict[str, Any],
+        file_info: Dict[str, Any],
+        transfer_options: Dict[str, Any],
+        target_storage: str,
+        transfer_type: str,
+        extra_count: int = 0,
+    ) -> None:
+        items = transfer_options.get("preview_items") or []
+        source_path = str(file_info.get("path") or "")
+        preview_item = self._find_preview_item(items, source_path)
+        ai_detail = dict(transfer_options.get("ai_recognition_detail") or {})
+
+        target = ""
+        if preview_item:
+            target = self._clean_render_path(
+                preview_item.get("target") or preview_item.get("target_dir") or ""
+            )
+        if not target:
+            preview_dirs = transfer_options.get("preview_target_dirs") or []
+            target = self._clean_render_path(preview_dirs[0]) if preview_dirs else ""
+        if not target:
+            target_path = transfer_options.get("target_path")
+            target = self._normalize_path(target_path) if target_path else ""
+
+        title = str((preview_item or {}).get("title") or ai_detail.get("title") or "").strip()
+        media_type = str((preview_item or {}).get("type") or ai_detail.get("type") or "").strip()
+        season = self._safe_positive_int((preview_item or {}).get("season"))
+        episode = self._safe_positive_int((preview_item or {}).get("episode"))
+        episode_end = self._safe_positive_int((preview_item or {}).get("episode_end"))
+
+        detail = {
+            "source": source_path,
+            "name": str(file_info.get("name") or Path(source_path).name or ""),
+            "title": title,
+            "type": media_type,
+            "season": season or "",
+            "episode": episode or "",
+            "episode_end": episode_end or "",
+            "target": target,
+            "target_storage": self._format_storage_name(target_storage),
+            "transfer_type": transfer_type,
+            "recognition": "AI" if transfer_options.get("recognition_source") == "ai" else "原生",
+            "reason": str(ai_detail.get("reason") or "").strip(),
+            "extra_count": int(extra_count or 0),
+        }
+        transferred_items = stats.setdefault("transferred_items", [])
+        if isinstance(transferred_items, list):
+            transferred_items.append(detail)
+
+    @staticmethod
+    def _find_preview_item(items: List[Dict[str, Any]], source_path: str) -> Dict[str, Any]:
+        if not items:
+            return {}
+        clean_source = str(source_path or "")
+        for item in items:
+            if str(item.get("source") or "") == clean_source:
+                return item
+        source_name = Path(clean_source).name if clean_source else ""
+        if source_name:
+            for item in items:
+                if Path(str(item.get("source") or "")).name == source_name:
+                    return item
+        return items[0]
+
     def _record_ai_recognition_success(
         self,
         stats: Dict[str, Any],
@@ -2656,6 +2742,13 @@ class OpenListMonitor(_PluginBase):
             f"新文件：{int(data.get('new_files') or 0)}",
             f"已提交整理：{int(data.get('transferred') or 0)}",
         ]
+        transferred_items = data.get("transferred_items") or []
+        if isinstance(transferred_items, list) and transferred_items:
+            lines.append("整理明细：")
+            for item in transferred_items[:10]:
+                lines.extend(self._format_transfer_detail_lines(item))
+            if len(transferred_items) > 10:
+                lines.append(f"- 其余 {len(transferred_items) - 10} 个整理条目已省略")
         ai_items = data.get("ai_recognition_fallback_items") or []
         ai_count = int(data.get("ai_recognition_fallback") or len(ai_items) or 0)
         if ai_count:
@@ -2700,6 +2793,46 @@ class OpenListMonitor(_PluginBase):
             )
         except Exception as e:
             logger.warning("【OpenList 目录监控】发送完成通知失败: %s", e)
+
+    @staticmethod
+    def _format_transfer_detail_lines(item: Dict[str, Any]) -> List[str]:
+        source_name = str(item.get("name") or Path(str(item.get("source") or "")).name or "-")
+        title = str(item.get("title") or "-")
+        media_type = str(item.get("type") or "-")
+        recognition = str(item.get("recognition") or "-")
+        target = str(item.get("target") or "-")
+        season = item.get("season")
+        episode = item.get("episode")
+        episode_end = item.get("episode_end")
+        extra_count = int(item.get("extra_count") or 0)
+        reason = str(item.get("reason") or "").strip()
+
+        episode_label = ""
+        if season:
+            episode_label = f"S{int(season):02d}"
+        if episode:
+            ep_text = f"E{int(episode):02d}"
+            if episode_end and int(episode_end) != int(episode):
+                ep_text = f"{ep_text}-E{int(episode_end):02d}"
+            episode_label = f"{episode_label}{ep_text}" if episode_label else ep_text
+
+        summary = f"- {source_name} -> {title}"
+        details = []
+        if media_type and media_type != "-":
+            details.append(media_type)
+        if episode_label:
+            details.append(episode_label)
+        if recognition and recognition != "-":
+            details.append(f"{recognition}识别")
+        if extra_count:
+            details.append(f"附加文件 {extra_count} 个")
+        if details:
+            summary = f"{summary}（{'，'.join(details)}）"
+
+        lines = [summary, f"  目标：{target}"]
+        if reason:
+            lines.append(f"  原因：{reason}")
+        return lines
 
     @staticmethod
     def _format_extra_files(stats: Dict[str, Any]) -> str:

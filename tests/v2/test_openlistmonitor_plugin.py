@@ -321,6 +321,47 @@ def test_finish_notification_includes_ai_fallback_reason(monkeypatch):
     assert "原因：原生识别季集校验失败" in messages[0]["text"]
 
 
+def test_finish_notification_includes_transfer_details(monkeypatch):
+    plugin = OpenListMonitor()
+    plugin._notify = True
+    messages = []
+
+    monkeypatch.setattr(
+        plugin,
+        "post_message",
+        lambda **kwargs: messages.append(kwargs),
+    )
+
+    plugin._send_finish_notification(
+        "检查完成，发现 1 个新文件，已整理 1 个",
+        {
+            "target_path_rules": [{"source": "/downloads", "target": "/library"}],
+            "new_files": 1,
+            "transferred": 1,
+            "transferred_items": [
+                {
+                    "name": "Our.Universe.S01E12.mkv",
+                    "title": "给你宇宙",
+                    "type": "电视剧",
+                    "season": 1,
+                    "episode": 12,
+                    "target": "/library/给你宇宙 {tmdb-999}/Season 01/Our.Universe.S01E12.mkv",
+                    "recognition": "AI",
+                    "extra_count": 2,
+                }
+            ],
+            "errors": [],
+        },
+    )
+
+    assert messages
+    text = messages[0]["text"]
+    assert "整理明细：" in text
+    assert "Our.Universe.S01E12.mkv -> 给你宇宙" in text
+    assert "S01E12" in text
+    assert "目标：/library/给你宇宙 {tmdb-999}/Season 01/Our.Universe.S01E12.mkv" in text
+
+
 def test_rescan_extra_files_matches_subtitles_after_video_move(monkeypatch):
     plugin = OpenListMonitor()
 
