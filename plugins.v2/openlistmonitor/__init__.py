@@ -35,7 +35,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.17"
+    plugin_version = "0.3.18"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -302,7 +302,7 @@ class OpenListMonitor(_PluginBase):
                                         "props": {
                                             "model": "clean_residual_files",
                                             "label": "清理残留文件",
-                                            "hint": "目录内已无视频时，按白名单删除图片、说明等残留文件",
+                                            "hint": "目录内已无主视频时，按白名单删除图片、说明和小体积视频残留",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -318,7 +318,7 @@ class OpenListMonitor(_PluginBase):
                                             "model": "residual_file_extensions",
                                             "label": "残留文件后缀",
                                             "placeholder": self.DEFAULT_RESIDUAL_FILE_EXTENSIONS,
-                                            "hint": "逗号或换行分隔；默认不包含字幕，视频文件始终不会清理",
+                                            "hint": "逗号或换行分隔；视频后缀需显式配置，且仅清理小于主视频最小大小的文件",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -920,6 +920,7 @@ class OpenListMonitor(_PluginBase):
             "ai_recognition_fallback": 0,
             "ai_recognition_fallback_items": [],
             "cleaned_files": 0,
+            "cleaned_file_items": [],
             "cleaned_dirs": 0,
             "rate_limit": {
                 "media_types": self._media_types,
@@ -987,7 +988,11 @@ class OpenListMonitor(_PluginBase):
             )
 
             if self._should_clean_empty_dirs() and scanned_dirs:
-                cleaned_dirs, cleaned_files = self._cleanup_empty_source_dirs(
+                (
+                    cleaned_dirs,
+                    cleaned_files,
+                    cleaned_file_items,
+                ) = self._cleanup_empty_source_dirs(
                     base_url=base_url,
                     headers=headers,
                     roots=paths,
@@ -995,6 +1000,7 @@ class OpenListMonitor(_PluginBase):
                 )
                 stats["cleaned_dirs"] = cleaned_dirs
                 stats["cleaned_files"] = cleaned_files
+                stats["cleaned_file_items"] = cleaned_file_items
 
             if stats["errors"]:
                 message = (
@@ -2302,10 +2308,11 @@ class OpenListMonitor(_PluginBase):
         headers: Dict[str, str],
         roots: List[str],
         scanned_dirs: List[str],
-    ) -> Tuple[int, int]:
+    ) -> Tuple[int, int, List[str]]:
         root_paths = {self._normalize_path(root) for root in roots if root}
         cleaned_dirs = 0
         cleaned_files = 0
+        cleaned_file_items = []
         candidates = sorted(
             {self._normalize_path(path) for path in scanned_dirs if path},
             key=lambda item: item.count("/"),
@@ -2318,10 +2325,14 @@ class OpenListMonitor(_PluginBase):
                 continue
             if not any(self._is_child_path(root, path) for root in root_paths):
                 continue
-            cleanable, residual_files, message = self._prepare_alist_dir_for_cleanup(
-                base_url, headers, path
-            )
+            (
+                cleanable,
+                residual_files,
+                message,
+                residual_file_items,
+            ) = self._prepare_alist_dir_for_cleanup(base_url, headers, path)
             cleaned_files += residual_files
+            cleaned_file_items.extend(residual_file_items)
             if not cleanable:
                 if message:
                     logger.debug("【OpenList 目录监控】跳过空目录清理 %s: %s", path, message)
@@ -2332,7 +2343,7 @@ class OpenListMonitor(_PluginBase):
                 logger.info("【OpenList 目录监控】已清理空目录: %s", path)
             else:
                 logger.warning("【OpenList 目录监控】清理空目录失败 %s: %s", path, message)
-        return cleaned_dirs, cleaned_files
+        return cleaned_dirs, cleaned_files, cleaned_file_items
 
     @staticmethod
     def _is_child_path(root: str, path: str) -> bool:
@@ -2344,31 +2355,32 @@ class OpenListMonitor(_PluginBase):
 
     def _prepare_alist_dir_for_cleanup(
         self, base_url: str, headers: Dict[str, str], path: str
-    ) -> Tuple[bool, int, str]:
+    ) -> Tuple[bool, int, str, List[str]]:
         listing, error = self._list_directory(base_url, headers, path, refresh=True)
         if error:
-            return False, 0, error
+            return False, 0, error, []
 
         items = listing.get("files") or []
         if not items:
-            return True, 0, ""
+            return True, 0, "", []
 
         dirs = [item for item in items if item.get("is_dir")]
         if dirs:
             names = self._format_preview_names(dirs)
-            return False, 0, f"目录仍有子目录: {names}"
+            return False, 0, f"目录仍有子目录: {names}", []
 
         files = [item for item in items if not item.get("is_dir")]
         if not files:
-            return True, 0, ""
+            return True, 0, "", []
         if not self._should_clean_residual_files():
-            return False, 0, "目录不为空"
+            return False, 0, "目录不为空", []
 
         allowed_extensions = self._get_residual_file_extensions()
         if not allowed_extensions:
-            return False, 0, "未配置残留文件后缀"
+            return False, 0, "未配置残留文件后缀", []
 
         max_size_bytes = int(float(self._residual_file_max_size_mb or 0) * 1024 * 1024)
+        min_video_size_bytes = int(float(self._min_file_size_mb or 0) * 1024 * 1024)
         residual_names = []
         blockers = []
         for item in files:
@@ -2378,48 +2390,56 @@ class OpenListMonitor(_PluginBase):
                 continue
             ext = self._normalize_extension(os.path.splitext(name)[1])
             size = self._to_file_size(item.get("size"))
-            if ext in self.VIDEO_EXTENSIONS:
-                blockers.append(f"{name}(视频)")
-                continue
             if ext not in allowed_extensions:
-                blockers.append(name)
+                suffix = "视频未配置为残留" if ext in self.VIDEO_EXTENSIONS else "后缀未配置"
+                blockers.append(f"{name}({suffix})")
                 continue
             if max_size_bytes and size > max_size_bytes:
                 blockers.append(f"{name}(超过大小限制)")
                 continue
+            if (
+                ext in self.VIDEO_EXTENSIONS
+                and min_video_size_bytes
+                and size >= min_video_size_bytes
+            ):
+                blockers.append(f"{name}(达到主视频最小大小)")
+                continue
             residual_names.append(name)
 
         if blockers:
-            return False, 0, f"目录仍有非残留文件: {', '.join(blockers[:5])}"
+            return False, 0, f"目录仍有非残留文件: {', '.join(blockers[:5])}", []
         if not residual_names:
-            return True, 0, ""
+            return True, 0, "", []
 
         state, message = self._remove_alist_names(
             base_url, headers, path, residual_names
         )
         if not state:
-            return False, 0, f"清理残留文件失败: {message}"
+            return False, 0, f"清理残留文件失败: {message}", []
 
         state, message = self._wait_alist_dir_items_absent(
             base_url, headers, path, residual_names
         )
         if not state:
-            return False, 0, message
+            return False, 0, message, []
 
         listing, error = self._list_directory(base_url, headers, path, refresh=True)
         if error:
-            return False, len(residual_names), error
+            return False, len(residual_names), error, []
         remaining = listing.get("files") or []
         if remaining:
-            return False, len(residual_names), f"目录仍有 {len(remaining)} 个项目"
+            return False, len(residual_names), f"目录仍有 {len(remaining)} 个项目", []
 
+        residual_file_items = []
         for name in residual_names:
+            residual_path = f"{path.rstrip('/')}/{name}"
+            residual_file_items.append(residual_path)
             logger.info(
                 "【OpenList 目录监控】已清理残留文件: %s/%s",
                 path.rstrip("/"),
                 name,
             )
-        return True, len(residual_names), ""
+        return True, len(residual_names), "", residual_file_items
 
     @staticmethod
     def _format_preview_names(items: List[Dict[str, Any]]) -> str:
@@ -2775,6 +2795,13 @@ class OpenListMonitor(_PluginBase):
             lines.append(f"同步附加文件：{int(data.get('transferred_extra') or 0)}")
         if int(data.get("cleaned_files") or 0):
             lines.append(f"清理残留文件：{int(data.get('cleaned_files') or 0)}")
+            cleaned_items = data.get("cleaned_file_items") or []
+            if cleaned_items:
+                lines.append("清理残留明细：")
+                for item in cleaned_items[:10]:
+                    lines.append(f"- {item}")
+                if len(cleaned_items) > 10:
+                    lines.append(f"- 其余 {len(cleaned_items) - 10} 个残留文件已省略")
         if int(data.get("cleaned_dirs") or 0):
             lines.append(f"清理空目录：{int(data.get('cleaned_dirs') or 0)}")
         if errors:
@@ -2936,7 +2963,7 @@ class OpenListMonitor(_PluginBase):
         extensions = set()
         for item in raw.replace(",", "\n").splitlines():
             ext = self._normalize_extension(item)
-            if ext and ext not in self.VIDEO_EXTENSIONS:
+            if ext:
                 extensions.add(ext)
         return extensions
 
