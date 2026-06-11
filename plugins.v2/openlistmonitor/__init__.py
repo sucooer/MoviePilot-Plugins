@@ -35,7 +35,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.14"
+    plugin_version = "0.3.16"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -1311,6 +1311,7 @@ class OpenListMonitor(_PluginBase):
                 transfer_options["ai_recognition_detail"] = self._build_ai_recognition_detail(
                     fileitem=fileitem,
                     mediainfo=ai_mediainfo,
+                    reason="原生识别未命中",
                 )
                 state, preview_data = self._preview_remote_transfer(
                     transfer_chain=transfer_chain,
@@ -1338,6 +1339,22 @@ class OpenListMonitor(_PluginBase):
         media_type_error = self._get_preview_media_type_error(preview_data)
         if media_type_error:
             return False, media_type_error, True, transfer_options
+        episode_error = self._get_preview_episode_guard_error(preview_data)
+        if episode_error:
+            state, preview_data, episode_error = self._retry_preview_with_ai_recognition(
+                transfer_chain=transfer_chain,
+                fileitem=fileitem,
+                target_storage=target_storage,
+                transfer_options=transfer_options,
+                transfer_type=transfer_type,
+                source_meta=recognition_meta,
+                reason=episode_error,
+            )
+            if not state:
+                return False, episode_error, False, transfer_options
+            media_type_error = self._get_preview_media_type_error(preview_data)
+            if media_type_error:
+                return False, media_type_error, True, transfer_options
 
         adjusted_options = self._get_top_level_transfer_options(
             preview_data=preview_data,
@@ -1364,6 +1381,22 @@ class OpenListMonitor(_PluginBase):
             media_type_error = self._get_preview_media_type_error(preview_data)
             if media_type_error:
                 return False, media_type_error, True, transfer_options
+            episode_error = self._get_preview_episode_guard_error(preview_data)
+            if episode_error:
+                state, preview_data, episode_error = self._retry_preview_with_ai_recognition(
+                    transfer_chain=transfer_chain,
+                    fileitem=fileitem,
+                    target_storage=target_storage,
+                    transfer_options=transfer_options,
+                    transfer_type=transfer_type,
+                    source_meta=transfer_options.get("recognition_meta") or recognition_meta,
+                    reason=episode_error,
+                )
+                if not state:
+                    return False, episode_error, False, transfer_options
+                media_type_error = self._get_preview_media_type_error(preview_data)
+                if media_type_error:
+                    return False, media_type_error, True, transfer_options
 
         preview_target_dirs = self._get_preview_target_dirs(preview_data)
         transfer_options["preview_target_dirs"] = preview_target_dirs
@@ -1413,6 +1446,72 @@ class OpenListMonitor(_PluginBase):
                 transfer_chain.jobview.remove_task(fileitem)
             except Exception as e:
                 logger.debug("【OpenList 目录监控】清理预览任务失败: %s", e)
+
+    def _retry_preview_with_ai_recognition(
+        self,
+        transfer_chain: Any,
+        fileitem: schemas.FileItem,
+        target_storage: str,
+        transfer_options: Dict[str, Any],
+        transfer_type: str,
+        source_meta: Any,
+        reason: str,
+    ) -> Tuple[bool, Any, str]:
+        if transfer_options.get("recognition_source") == "ai":
+            return False, None, f"AI识别后仍不满足季集校验: {reason}"
+        if not self._ai_recognition_fallback:
+            return False, None, f"{reason}，AI识别兜底未启用"
+
+        ai_meta, ai_mediainfo = self._build_ai_recognition_result(
+            fileitem=fileitem,
+            source_meta=source_meta,
+            preview_data={"message": reason},
+            force=True,
+            require_episode_match=True,
+        )
+        if not ai_meta or not ai_mediainfo:
+            return False, None, f"{reason}，AI识别兜底未命中可用结果"
+
+        backup_options = {
+            "recognition_meta": transfer_options.get("recognition_meta"),
+            "recognition_mediainfo": transfer_options.get("recognition_mediainfo"),
+            "recognition_source": transfer_options.get("recognition_source"),
+            "ai_recognition_detail": transfer_options.get("ai_recognition_detail"),
+        }
+        transfer_options["recognition_meta"] = ai_meta
+        transfer_options["recognition_mediainfo"] = ai_mediainfo
+        transfer_options["recognition_source"] = "ai"
+        transfer_options["ai_recognition_detail"] = self._build_ai_recognition_detail(
+            fileitem=fileitem,
+            mediainfo=ai_mediainfo,
+            reason=f"原生识别季集校验失败：{reason}",
+        )
+
+        state, preview_data = self._preview_remote_transfer(
+            transfer_chain=transfer_chain,
+            fileitem=fileitem,
+            target_storage=target_storage,
+            transfer_path_options=transfer_options,
+            transfer_type=transfer_type,
+            recognition_meta=ai_meta,
+            recognition_mediainfo=ai_mediainfo,
+        )
+        if not state:
+            transfer_options.update(backup_options)
+            return False, preview_data, f"AI识别兜底预览失败: {self._format_preview_error(preview_data)}"
+
+        episode_error = self._get_preview_episode_guard_error(preview_data)
+        if episode_error:
+            transfer_options.update(backup_options)
+            return False, preview_data, f"AI识别后仍不满足季集校验: {episode_error}"
+
+        logger.info(
+            "【OpenList 目录监控】原生识别季集校验失败，已改用AI识别: %s -> %s，原因：%s",
+            getattr(fileitem, "path", "") or getattr(fileitem, "name", ""),
+            getattr(ai_mediainfo, "title_year", "") or getattr(ai_mediainfo, "title", ""),
+            reason,
+        )
+        return True, preview_data, ""
 
     def _transfer_extra_files(
         self,
@@ -1891,6 +1990,89 @@ class OpenListMonitor(_PluginBase):
             f"媒体类型 {', '.join(sorted(disallowed_media_types))} "
             f"不在选择范围 {', '.join(self._media_types)}"
         )
+
+    def _get_preview_episode_count_error(self, preview_data: Any) -> str:
+        return self._get_preview_episode_guard_error(preview_data)
+
+    def _get_preview_episode_guard_error(self, preview_data: Any) -> str:
+        if not isinstance(preview_data, dict):
+            return ""
+        for item in preview_data.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            source_text = " ".join(
+                str(value or "")
+                for value in (item.get("source"), item.get("org_string"))
+                if str(value or "").strip()
+            )
+            if not source_text:
+                continue
+
+            source_season = self._extract_source_season_number(source_text)
+            expected_total = self._extract_source_total_episodes(source_text)
+            source_episodes = self._extract_source_episode_numbers(source_text)
+            max_source_episode = max(source_episodes) if source_episodes else 0
+            media_type = str(item.get("type") or "").strip()
+            if media_type and media_type != MediaType.TV.value:
+                if source_season or source_episodes or expected_total:
+                    return (
+                        f"识别结果疑似错误：源文件包含剧集季集信息，"
+                        f"但识别结果类型为 {media_type}"
+                    )
+                continue
+            item_season = self._safe_positive_int(item.get("season"))
+            item_episode = self._safe_positive_int(item.get("episode"))
+            item_episode_end = self._safe_positive_int(item.get("episode_end")) or item_episode
+
+            if source_season and item_season and source_season != item_season:
+                return (
+                    f"识别结果疑似错误：源文件为第 {source_season} 季，"
+                    f"但识别结果为第 {item_season} 季"
+                )
+            if source_season and not item_season:
+                return f"识别结果疑似错误：源文件为第 {source_season} 季，但识别结果缺少季号"
+            if source_episodes and not item_episode:
+                return (
+                    f"识别结果疑似错误：源文件包含第 {', '.join(map(str, source_episodes[:5]))} 集，"
+                    "但识别结果缺少集数"
+                )
+            if source_episodes and item_episode:
+                preview_start = item_episode
+                preview_end = item_episode_end or item_episode
+                missing = [
+                    episode for episode in source_episodes
+                    if episode < preview_start or episode > preview_end
+                ]
+                if missing:
+                    return (
+                        f"识别结果疑似错误：源文件包含第 {', '.join(map(str, missing[:5]))} 集，"
+                        f"但识别结果为第 {preview_start}"
+                        f"{f'-{preview_end}' if preview_end != preview_start else ''} 集"
+                    )
+
+            if not expected_total and not max_source_episode:
+                continue
+
+            tmdb_id = self._extract_preview_tmdb_id(item)
+            if not tmdb_id:
+                continue
+            season = item_season or source_season or 1
+            tmdb_episode_count = self._get_tmdb_season_episode_count(tmdb_id, season)
+            if not tmdb_episode_count:
+                continue
+
+            title = str(item.get("title") or f"TMDB {tmdb_id}").strip()
+            if expected_total and expected_total > tmdb_episode_count:
+                return (
+                    f"识别结果疑似错误：源路径标记全 {expected_total} 集，"
+                    f"但命中 {title} 第 {season} 季只有 {tmdb_episode_count} 集"
+                )
+            if max_source_episode and max_source_episode > tmdb_episode_count:
+                return (
+                    f"识别结果疑似错误：源文件包含第 {max_source_episode} 集，"
+                    f"但命中 {title} 第 {season} 季只有 {tmdb_episode_count} 集"
+                )
+        return ""
 
     def _get_preview_target_dirs(self, preview_data: Any) -> List[str]:
         target_dirs = []
@@ -2414,6 +2596,7 @@ class OpenListMonitor(_PluginBase):
     def _build_ai_recognition_detail(
         fileitem: schemas.FileItem,
         mediainfo: Any,
+        reason: str = "",
     ) -> Dict[str, Any]:
         media_type = getattr(mediainfo, "type", None)
         return {
@@ -2426,6 +2609,7 @@ class OpenListMonitor(_PluginBase):
             ),
             "tmdb_id": getattr(mediainfo, "tmdb_id", None) or "",
             "type": getattr(media_type, "value", "") if media_type else "",
+            "reason": str(reason or "AI识别兜底").strip(),
         }
 
     def _finish(self, message: str, data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
@@ -2482,9 +2666,12 @@ class OpenListMonitor(_PluginBase):
                     media_title = str(item.get("title") or "-")
                     tmdb_id = str(item.get("tmdb_id") or "-")
                     media_type = str(item.get("type") or "-")
+                    reason = str(item.get("reason") or "").strip()
                     lines.append(
                         f"- {source_name} -> {media_title}（{media_type}，TMDB {tmdb_id}）"
                     )
+                    if reason:
+                        lines.append(f"  原因：{reason}")
                 if len(ai_items) > 5:
                     lines.append(f"- 其余 {len(ai_items) - 5} 个 AI 兜底条目已省略")
         if int(data.get("limited_files") or 0):
@@ -2699,8 +2886,10 @@ class OpenListMonitor(_PluginBase):
         fileitem: schemas.FileItem,
         source_meta: Any = None,
         preview_data: Any = None,
+        force: bool = False,
+        require_episode_match: bool = False,
     ) -> Tuple[Any, Any]:
-        if not self._should_ai_recognition_fallback(preview_data):
+        if not force and not self._should_ai_recognition_fallback(preview_data):
             return None, None
 
         source_path = str(getattr(fileitem, "path", "") or "").strip()
@@ -2848,6 +3037,19 @@ class OpenListMonitor(_PluginBase):
                     ",".join(self._extract_ai_result_years(candidate, mediainfo)) or "-",
                 )
                 continue
+            if require_episode_match:
+                episode_error = self._get_ai_episode_guard_error(raw_text, meta, mediainfo)
+                if episode_error:
+                    failed_candidates.append(
+                        f"{self._format_ai_candidate(candidate)}: {episode_error}"
+                    )
+                    logger.info(
+                        "【OpenList 目录监控】AI识别命中但季集校验未通过，跳过: %s -> %s，%s",
+                        source_name or source_path,
+                        getattr(mediainfo, "title_year", "") or getattr(mediainfo, "title", ""),
+                        episode_error,
+                    )
+                    continue
 
             logger.info(
                 "【OpenList 目录监控】AI识别兜底命中: %s -> %s，置信度 %.2f，TMDB %s",
@@ -3260,6 +3462,151 @@ MoviePilot 当前解析提示：
         if not target_years:
             return True
         return bool(source_years & target_years)
+
+    @classmethod
+    def _extract_source_season_number(cls, value: Any) -> Optional[int]:
+        text = str(value or "")
+        if not text:
+            return None
+        patterns = (
+            r"\bS(\d{1,2})(?:E\d{1,4})?\b",
+            r"\bSeason[._\-\s]*(\d{1,2})\b",
+            r"第\s*(\d{1,2})\s*季",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.I)
+            if not match:
+                continue
+            number = cls._safe_positive_int(match.group(1))
+            if number:
+                return number
+        return None
+
+    @classmethod
+    def _extract_source_total_episodes(cls, value: Any) -> Optional[int]:
+        text = str(value or "")
+        if not text:
+            return None
+        patterns = (
+            r"全\s*(\d{1,4})\s*[集话話]",
+            r"(\d{1,4})\s*[集话話]\s*全",
+            r"\bcomplete(?:d)?\s*(?:season\s*\d{1,2}\s*)?(\d{1,4})\s*(?:episodes?|eps?)\b",
+            r"\b(\d{1,4})\s*(?:episodes?|eps?)\s*complete(?:d)?\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.I)
+            if not match:
+                continue
+            number = cls._safe_positive_int(match.group(1))
+            if number:
+                return number
+        return None
+
+    @classmethod
+    def _extract_source_episode_numbers(cls, value: Any) -> List[int]:
+        text = str(value or "")
+        if not text:
+            return []
+        numbers = []
+        patterns = (
+            r"\bS\d{1,2}E(\d{1,4})(?!\d)",
+            r"(?:^|[._\-\s])EP?(\d{1,4})(?!\d)",
+            r"\bEpisode[._\-\s]*(\d{1,4})(?!\d)",
+            r"第\s*(\d{1,4})\s*[集话話]",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.I):
+                number = cls._safe_positive_int(match.group(1))
+                if number and number not in numbers:
+                    numbers.append(number)
+        return numbers
+
+    @staticmethod
+    def _extract_preview_tmdb_id(item: Dict[str, Any]) -> Optional[int]:
+        for key in ("target", "target_dir"):
+            match = re.search(r"\{tmdb-(\d+)\}", str(item.get(key) or ""), flags=re.I)
+            if not match:
+                continue
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @classmethod
+    def _get_ai_episode_guard_error(cls, source_text: Any, meta: Any, mediainfo: Any) -> str:
+        raw_text = str(source_text or "")
+        source_season = cls._extract_source_season_number(raw_text)
+        source_episodes = cls._extract_source_episode_numbers(raw_text)
+        expected_total = cls._extract_source_total_episodes(raw_text)
+        media_type = getattr(mediainfo, "type", None)
+        media_type_value = getattr(media_type, "value", media_type)
+        if (
+            (source_season or source_episodes or expected_total)
+            and media_type_value
+            and media_type_value != MediaType.TV.value
+        ):
+            return f"源文件包含剧集季集信息，AI命中结果类型为 {media_type_value}"
+
+        meta_season = cls._safe_positive_int(getattr(meta, "begin_season", None))
+        meta_episode = cls._safe_positive_int(getattr(meta, "begin_episode", None))
+        meta_episode_end = cls._safe_positive_int(getattr(meta, "end_episode", None)) or meta_episode
+
+        if source_season and meta_season and source_season != meta_season:
+            return f"源文件为第 {source_season} 季，AI候选为第 {meta_season} 季"
+        if source_season and not meta_season:
+            return f"源文件为第 {source_season} 季，AI候选缺少季号"
+        if source_episodes and not meta_episode:
+            return f"源文件包含第 {', '.join(map(str, source_episodes[:5]))} 集，AI候选缺少集数"
+        if source_episodes and meta_episode:
+            preview_start = meta_episode
+            preview_end = meta_episode_end or meta_episode
+            missing = [
+                episode for episode in source_episodes
+                if episode < preview_start or episode > preview_end
+            ]
+            if missing:
+                return (
+                    f"源文件包含第 {', '.join(map(str, missing[:5]))} 集，"
+                    f"AI候选为第 {preview_start}"
+                    f"{f'-{preview_end}' if preview_end != preview_start else ''} 集"
+                )
+
+        tmdb_id = cls._safe_positive_int(getattr(mediainfo, "tmdb_id", None))
+        if not tmdb_id:
+            return ""
+        season = meta_season or source_season or cls._safe_positive_int(getattr(mediainfo, "season", None)) or 1
+        episode_count = cls._get_tmdb_season_episode_count(tmdb_id, season)
+        if not episode_count:
+            return ""
+        if expected_total and expected_total > episode_count:
+            title = getattr(mediainfo, "title_year", "") or getattr(mediainfo, "title", "") or f"TMDB {tmdb_id}"
+            return f"源路径标记全 {expected_total} 集，但命中 {title} 第 {season} 季只有 {episode_count} 集"
+        if source_episodes and max(source_episodes) > episode_count:
+            title = getattr(mediainfo, "title_year", "") or getattr(mediainfo, "title", "") or f"TMDB {tmdb_id}"
+            return f"源文件包含第 {max(source_episodes)} 集，但命中 {title} 第 {season} 季只有 {episode_count} 集"
+        return ""
+
+    @staticmethod
+    def _safe_positive_int(value: Any) -> Optional[int]:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if 0 < number < 10000 else None
+
+    @staticmethod
+    def _get_tmdb_season_episode_count(tmdb_id: int, season: int) -> int:
+        try:
+            from app.chain.tmdb import TmdbChain
+            episodes = TmdbChain().tmdb_episodes(tmdbid=tmdb_id, season=season)
+            return len(episodes or [])
+        except Exception as e:
+            logger.debug(
+                "【OpenList 目录监控】查询 TMDB 季集数失败 tmdb=%s season=%s: %s",
+                tmdb_id, season, e,
+            )
+        return 0
 
     @staticmethod
     def _extract_plausible_years(value: Any) -> List[str]:
