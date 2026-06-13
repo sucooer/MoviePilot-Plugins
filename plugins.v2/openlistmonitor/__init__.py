@@ -35,7 +35,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.18"
+    plugin_version = "0.3.19"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -75,6 +75,7 @@ class OpenListMonitor(_PluginBase):
     _residual_file_extensions = ""
     _residual_file_max_size_mb = 20
     _notify = True
+    _skip_rename_standard_naming = False
     _scheduler: Optional[BackgroundScheduler] = None
     _event = threading.Event()
     _lock = threading.Lock()
@@ -154,6 +155,7 @@ class OpenListMonitor(_PluginBase):
             config.get("residual_file_max_size_mb"), 20, 1, 1024
         )
         self._notify = bool(config.get("notify", True))
+        self._skip_rename_standard_naming = bool(config.get("skip_rename_standard_naming", False))
         self._max_depth = self._to_int(config.get("max_depth"), 5, 0, 20)
         self._delay_seconds = self._to_float(config.get("delay_seconds"), 1.0, 0, 30)
         self._api_interval_seconds = self._to_float(
@@ -573,6 +575,21 @@ class OpenListMonitor(_PluginBase):
                                     {
                                         "component": "VSwitch",
                                         "props": {
+                                            "model": "skip_rename_standard_naming",
+                                            "label": "标准命名跳过重命名",
+                                            "hint": "文件名含 SxxExx 标准剧集格式时直接移动，不重命名",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
                                             "model": "sync_extra_files",
                                             "label": "同步字幕音轨",
                                             "hint": "远程整理主视频时，让 MoviePilot 同步同媒体附加文件",
@@ -753,6 +770,7 @@ class OpenListMonitor(_PluginBase):
             "residual_file_extensions": self.DEFAULT_RESIDUAL_FILE_EXTENSIONS,
             "residual_file_max_size_mb": 20,
             "notify": True,
+            "skip_rename_standard_naming": False,
         }
 
     def get_page(self) -> List[dict]:
@@ -782,6 +800,7 @@ class OpenListMonitor(_PluginBase):
             ("残留文件后缀", ",".join(sorted(self._get_residual_file_extensions())) or "-"),
             ("残留文件最大MB", str(self._residual_file_max_size_mb)),
             ("完成通知", "是" if self._notify else "否"),
+            ("标准命名跳过重命名", "是" if self._skip_rename_standard_naming else "否"),
             ("最近检查", str(last_result.get("time") or "-")),
             ("新文件数", str(last_result.get("new_files", 0))),
             ("延后处理数", str(last_result.get("limited_files", 0))),
@@ -789,6 +808,7 @@ class OpenListMonitor(_PluginBase):
             ("已整理数", str(last_result.get("transferred", 0))),
             ("已同步附加文件", str(last_result.get("transferred_extra", 0))),
             ("AI兜底整理", str(last_result.get("ai_recognition_fallback", 0))),
+            ("标准命名跳过重命名", str(last_result.get("skip_rename_standard_naming_count", 0))),
             ("已清理残留文件", str(last_result.get("cleaned_files", 0))),
             ("已清理空目录", str(last_result.get("cleaned_dirs", 0))),
             ("最近结果", str(last_result.get("message") or "-")),
@@ -919,6 +939,7 @@ class OpenListMonitor(_PluginBase):
             "transferred_items": [],
             "ai_recognition_fallback": 0,
             "ai_recognition_fallback_items": [],
+            "skip_rename_standard_naming_count": 0,
             "cleaned_files": 0,
             "cleaned_file_items": [],
             "cleaned_dirs": 0,
@@ -932,6 +953,7 @@ class OpenListMonitor(_PluginBase):
                 ),
                 "ai_recognition_fallback": self._ai_recognition_fallback,
                 "scrape": self._scrape,
+                "skip_rename_standard_naming": self._skip_rename_standard_naming,
                 "max_files_per_run": self._max_files_per_run,
                 "api_interval_seconds": self._api_interval_seconds,
                 "transfer_interval_seconds": self._transfer_interval_seconds,
@@ -1007,6 +1029,7 @@ class OpenListMonitor(_PluginBase):
                     f"检查完成，发现 {stats['new_files']} 个新文件，"
                     f"已整理 {stats['transferred']} 个"
                     f"{self._format_extra_files(stats)}"
+                    f"{self._format_skip_rename_count(stats)}"
                     f"{self._format_skipped_type(stats)}"
                     f"{self._format_limited_files(stats)}"
                     f"{self._format_cleaned_files(stats)}"
@@ -1018,6 +1041,7 @@ class OpenListMonitor(_PluginBase):
                     f"检查完成，发现 {stats['new_files']} 个新文件，"
                     f"已整理 {stats['transferred']} 个"
                     f"{self._format_extra_files(stats)}"
+                    f"{self._format_skip_rename_count(stats)}"
                     f"{self._format_skipped_type(stats)}"
                     f"{self._format_cleaned_files(stats)}"
                     f"{self._format_cleaned_dirs(stats)}"
@@ -1206,35 +1230,61 @@ class OpenListMonitor(_PluginBase):
                     "recognition_mediainfo"
                 )
 
-                logger.info(
-                    "【OpenList 目录监控】提交远程整理: %s -> [%s]%s (%s)，监控根目录：%s",
-                    file_info["path"],
-                    self._format_storage_name(target_storage),
-                    final_target_path or "按 MoviePilot 目录规则",
-                    transfer_type,
-                    file_info.get("monitor_root") or "-",
+                skip_rename = (
+                    self._skip_rename_standard_naming
+                    and self._is_standard_naming_format(file_info.get("name", ""))
                 )
-                if not self._wait_transfer_interval():
-                    break
-                state, message = transfer_chain.do_transfer(
-                    fileitem=fileitem,
-                    meta=final_recognition_meta,
-                    mediainfo=final_recognition_mediainfo,
-                    target_storage=target_storage,
-                    target_path=final_target_path,
-                    transfer_type=transfer_type,
-                    library_type_folder=final_library_type_folder,
-                    library_category_folder=final_library_category_folder,
-                    scrape=True if self._scrape else None,
-                    min_filesize=self._min_file_size_mb,
-                    force=True,
-                    background=self._background_transfer,
-                    manual=False,
-                    sync_extra_files=False,
-                )
+                if skip_rename:
+                    logger.info(
+                        "【OpenList 目录监控】标准命名格式，保留原名: %s -> [%s]%s",
+                        file_info["path"],
+                        self._format_storage_name(target_storage),
+                        final_target_path or "按 MoviePilot 目录规则",
+                    )
+                    if not self._wait_transfer_interval():
+                        break
+                    state = self._move_file_preserve_name(
+                        file_info=file_info,
+                        transfer_options=transfer_options,
+                        target_storage=target_storage,
+                        transfer_type=transfer_type,
+                    )
+                    message = "" if state else "OpenList 直接移动失败"
+                else:
+                    logger.info(
+                        "【OpenList 目录监控】提交远程整理: %s -> [%s]%s (%s)，监控根目录：%s",
+                        file_info["path"],
+                        self._format_storage_name(target_storage),
+                        final_target_path or "按 MoviePilot 目录规则",
+                        transfer_type,
+                        file_info.get("monitor_root") or "-",
+                    )
+                    if not self._wait_transfer_interval():
+                        break
+                    state, message = transfer_chain.do_transfer(
+                        fileitem=fileitem,
+                        meta=final_recognition_meta,
+                        mediainfo=final_recognition_mediainfo,
+                        target_storage=target_storage,
+                        target_path=final_target_path,
+                        transfer_type=transfer_type,
+                        library_type_folder=final_library_type_folder,
+                        library_category_folder=final_library_category_folder,
+                        scrape=True if self._scrape else None,
+                        min_filesize=self._min_file_size_mb,
+                        force=True,
+                        background=self._background_transfer,
+                        manual=False,
+                        sync_extra_files=False,
+                    )
                 if state:
                     transferred_records.add(self._record_key(file_info))
                     count += 1
+                    if skip_rename:
+                        transfer_options["recognition_source"] = "standard"
+                        stats["skip_rename_standard_naming_count"] = int(
+                            stats.get("skip_rename_standard_naming_count") or 0
+                        ) + 1
                     self._record_ai_recognition_success(
                         stats=stats,
                         file_info=file_info,
@@ -1985,6 +2035,84 @@ class OpenListMonitor(_PluginBase):
             return False
         return True
 
+    def _move_file_preserve_name(
+        self,
+        file_info: Dict[str, Any],
+        transfer_options: Dict[str, Any],
+        target_storage: str,
+        transfer_type: str,
+    ) -> bool:
+        if target_storage != "alist":
+            return False
+
+        conf = self._get_alist_conf()
+        if not conf:
+            return False
+        base_url = self._get_alist_base_url(conf)
+        headers = self._get_alist_auth_header(conf)
+        if not base_url or not headers:
+            return False
+
+        source_path = str(file_info.get("path") or "")
+        if not source_path:
+            return False
+
+        source_dir = self._normalize_path(str(Path(source_path).parent.as_posix()))
+        name = str(file_info.get("name") or Path(source_path).name)
+
+        preview_target_dirs = transfer_options.get("preview_target_dirs") or []
+        if not preview_target_dirs:
+            return False
+        target_dir = self._normalize_path(preview_target_dirs[0])
+
+        if source_dir == target_dir:
+            return True
+
+        if not self._ensure_alist_directory(target_dir)[0]:
+            return False
+
+        endpoint = "/api/fs/move" if transfer_type == "move" else "/api/fs/copy"
+        resp = self._post_alist(
+            base_url,
+            endpoint,
+            headers,
+            json={
+                "src_dir": source_dir,
+                "names": [name],
+                "dst_dir": target_dir,
+            },
+        )
+        if not resp:
+            logger.warning(
+                "【OpenList 目录监控】标准命名移动无响应: %s", source_path,
+            )
+            return False
+        if resp.status_code != 200:
+            logger.warning(
+                "【OpenList 目录监控】标准命名移动HTTP失败 %s: HTTP %s",
+                source_path, resp.status_code,
+            )
+            return False
+        try:
+            result = resp.json()
+        except Exception as e:
+            logger.warning(
+                "【OpenList 目录监控】标准命名移动解析失败 %s: %s", source_path, e,
+            )
+            return False
+        if result.get("code") != 200:
+            logger.warning(
+                "【OpenList 目录监控】标准命名移动失败 %s: %s",
+                source_path, result.get("message") or "OpenList 返回错误",
+            )
+            return False
+
+        logger.info(
+            "【OpenList 目录监控】标准命名跳过重命名: %s -> %s/%s",
+            source_path, target_dir, name,
+        )
+        return True
+
     @staticmethod
     def _format_preview_error(preview_data: Any) -> str:
         if isinstance(preview_data, dict):
@@ -2655,7 +2783,11 @@ class OpenListMonitor(_PluginBase):
             "target": target,
             "target_storage": self._format_storage_name(target_storage),
             "transfer_type": transfer_type,
-            "recognition": "AI" if transfer_options.get("recognition_source") == "ai" else "原生",
+            "recognition": (
+                "AI" if transfer_options.get("recognition_source") == "ai"
+                else "标准命名跳过" if transfer_options.get("recognition_source") == "standard"
+                else "原生"
+            ),
             "reason": str(ai_detail.get("reason") or "").strip(),
             "extra_count": int(extra_count or 0),
         }
@@ -2791,6 +2923,8 @@ class OpenListMonitor(_PluginBase):
             lines.append(f"延后处理：{int(data.get('limited_files') or 0)}")
         if int(data.get("skipped_type") or 0):
             lines.append(f"跳过媒体类型：{int(data.get('skipped_type') or 0)}")
+        if int(data.get("skip_rename_standard_naming_count") or 0):
+            lines.append(f"标准命名跳过重命名：{int(data.get('skip_rename_standard_naming_count') or 0)}")
         if int(data.get("transferred_extra") or 0):
             lines.append(f"同步附加文件：{int(data.get('transferred_extra') or 0)}")
         if int(data.get("cleaned_files") or 0):
@@ -2867,6 +3001,11 @@ class OpenListMonitor(_PluginBase):
         return f"，附加文件 {extra} 个" if extra else ""
 
     @staticmethod
+    def _format_skip_rename_count(stats: Dict[str, Any]) -> str:
+        count = int(stats.get("skip_rename_standard_naming_count") or 0)
+        return f"，跳过重命名 {count} 个" if count else ""
+
+    @staticmethod
     def _format_cleaned_files(stats: Dict[str, Any]) -> str:
         cleaned_files = int(stats.get("cleaned_files") or 0)
         return f"，清理残留文件 {cleaned_files} 个" if cleaned_files else ""
@@ -2912,6 +3051,10 @@ class OpenListMonitor(_PluginBase):
 
     def _is_subtitle_ext(self, ext: str) -> bool:
         return self._normalize_extension(ext) in self.SUBTITLE_EXTENSIONS
+
+    @staticmethod
+    def _is_standard_naming_format(name: str) -> bool:
+        return bool(re.search(r'(?:[._\- ]?S\d{2}E\d{2})', name, re.I))
 
     @staticmethod
     def _match_extra_files(video_name: str, all_sub_names: List[str]) -> List[str]:

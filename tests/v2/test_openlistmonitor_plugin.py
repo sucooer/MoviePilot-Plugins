@@ -400,3 +400,26 @@ def test_rescan_extra_files_matches_subtitles_after_video_move(monkeypatch):
         "Kujou.no.Taizai.EP01.1080p.NF.WEB-DL.Chs.srt",
         "Kujou.no.Taizai.EP01.1080p.NF.WEB-DL.Eng.srt",
     ]
+
+
+def test_is_standard_naming_format_positive():
+    """Must return True for filenames containing SxxExx standard naming."""
+    plugin = OpenListMonitor()
+    assert plugin._is_standard_naming_format("Show.S01E01.mkv")
+    assert plugin._is_standard_naming_format("Show - S01E01 - Episode Title.mkv")
+    assert plugin._is_standard_naming_format("Show_S01E01.mkv")
+    assert plugin._is_standard_naming_format("[Group] Show S01E01 1080p.mkv")
+    assert plugin._is_standard_naming_format("/path/to/Show.S01E01.Episode.1.mkv")
+    assert plugin._is_standard_naming_format("Show.S01E01E02.mkv")
+    assert plugin._is_standard_naming_format("Show.S01E01-02.mkv")
+
+
+def test_is_standard_naming_format_negative():
+    """Must return False for non-standard or movie-only filenames."""
+    plugin = OpenListMonitor()
+    assert not plugin._is_standard_naming_format("Show.1x01.mkv")
+    assert not plugin._is_standard_naming_format("Movie (2020).mkv")
+    assert not plugin._is_standard_naming_format("Show.EP01.mkv")
+    assert not plugin._is_standard_naming_format("Show.1080p.mkv")
+    assert not plugin._is_standard_naming_format("")
+
