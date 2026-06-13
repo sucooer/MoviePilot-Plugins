@@ -2231,6 +2231,7 @@ class OpenListMonitor(_PluginBase):
                 target_parent = Path(target).parent.as_posix()
                 if target_parent and target_parent not in target_dirs:
                     target_dirs.append(target_parent)
+        target_dirs.sort(key=lambda d: d.count("/"), reverse=True)
         return target_dirs
 
     @staticmethod
