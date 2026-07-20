@@ -119,5 +119,33 @@
       "v0.2.0": "新增远程整理模式，调用 MoviePilot 整理链并通过 OpenList 在网盘内移动/重命名。",
       "v0.1.0": "初始化插件，监控 OpenList 目录变化并自动下载新增媒体文件到本地。"
     }
+  },
+  "OpenListMetadataSync": {
+    "name": "OpenList Metadata Sync",
+    "description": "通过 OpenList 同步本地元数据文件，支持双向同步、修改时间对比、自定义同步规则。",
+    "labels": "OpenList,元数据,同步,AList",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png",
+    "author": "sucooer",
+    "level": 1,
+    "release": false,
+    "system_version": ">=2.12.0",
+    "history": {
+      "v1.0.0": "初始化插件，支持元数据双向同步、下载/上传/删除策略、修改时间对比。"
+    }
+  },
+  "OpenListTaskMonitor": {
+    "name": "OpenList Task Monitor",
+    "description": "监控 OpenList 复制、上传、离线下载等任务状态，完成或失败时发送通知。",
+    "labels": "OpenList,任务监控,通知,AList",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png",
+    "author": "sucooer",
+    "level": 1,
+    "release": false,
+    "system_version": ">=2.12.0",
+    "history": {
+      "v1.0.0": "初始化插件，支持 OpenList 任务监控通知，多服务支持。"
+    }
   }
 }
