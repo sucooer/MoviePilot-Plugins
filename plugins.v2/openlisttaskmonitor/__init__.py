@@ -22,7 +22,7 @@ class OpenListTaskMonitor(_PluginBase):
     plugin_name = "OpenList Task Monitor"
     plugin_desc = "监控 OpenList 复制、上传、离线下载等任务状态，完成或失败时发送通知。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlisttaskmonitor_"
@@ -731,7 +731,7 @@ class OpenListTaskMonitor(_PluginBase):
             start_time = fields.get("start_time") or ""
             lines.append(f"开始时间：{self._format_time(start_time)}")
         lines.append(f"创建者：{fields.get('creator') or '-'}")
-        return "\n".join(lines)
+        return "\n\n".join(lines)
 
     @staticmethod
     def _format_time(value: str) -> str:

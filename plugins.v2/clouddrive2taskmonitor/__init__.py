@@ -43,7 +43,7 @@ class CloudDrive2TaskMonitor(_PluginBase):
     plugin_name = "CloudDrive2 Task Monitor"
     plugin_desc = "监控 CloudDrive2 复制/移动任务状态，完成或失败时发送通知。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/Cloudrive_A.png"
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "clouddrive2taskmonitor_"
@@ -545,7 +545,7 @@ class CloudDrive2TaskMonitor(_PluginBase):
             lines.append(f"文件数：{fields['total_files']} 文件夹数：{fields['total_folders']}")
         if fields.get("error"):
             lines.append(f"错误：{fields['error']}")
-        return "\n".join(lines)
+        return "\n\n".join(lines)
 
     def _notify_completed(self, svc_name: str, task_type: str, success: bool, detail: str, mtype: NotificationType):
         marker = "✅" if success else "❌"
