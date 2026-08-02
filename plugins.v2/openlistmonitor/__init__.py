@@ -35,7 +35,7 @@ class OpenListMonitor(_PluginBase):
     plugin_name = "OpenList 目录监控"
     plugin_desc = "监控 OpenList 目录变化，提交新增文件给 MoviePilot 做网盘内远程整理。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "0.3.20"
+    plugin_version = "0.3.21"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlistmonitor_"
@@ -2713,7 +2713,10 @@ class OpenListMonitor(_PluginBase):
             except Exception as e:
                 return {}, f"解析响应失败: {e}"
             if result.get("code") != 200:
-                return {}, str(result.get("message") or "OpenList 返回错误")
+                msg = str(result.get("message") or "")
+                if "not found" in msg.lower() or "not exist" in msg.lower() or "no such" in msg.lower():
+                    return {"files": []}, ""
+                return {}, msg
 
             data = result.get("data") or {}
             content = data.get("content") or []
