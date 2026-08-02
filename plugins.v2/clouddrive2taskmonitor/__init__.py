@@ -43,7 +43,7 @@ class CloudDrive2TaskMonitor(_PluginBase):
     plugin_name = "CloudDrive2 Task Monitor"
     plugin_desc = "监控 CloudDrive2 复制/移动任务状态，完成或失败时发送通知。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/Cloudrive_A.png"
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.5"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "clouddrive2taskmonitor_"
@@ -534,17 +534,17 @@ class CloudDrive2TaskMonitor(_PluginBase):
     def _build_notify_detail(self, source: str, dest: str, **fields) -> str:
         lines = []
         file_name = source.rstrip("/").split("/")[-1] if source else "-"
-        lines.append(f"文件：{file_name}")
-        lines.append(f"源：{source}")
-        lines.append(f"目标：{dest}")
+        lines.append(f"📄 文件：{file_name}")
+        lines.append(f"📂 源：{source}")
+        lines.append(f"📁 目标：{dest}")
         if fields.get("size"):
-            lines.append(f"大小：{fields['size']}")
+            lines.append(f"💾 大小：{fields['size']}")
         if fields.get("duration"):
-            lines.append(f"耗时：{fields['duration']}")
+            lines.append(f"⏱️ 耗时：{fields['duration']}")
         if fields.get("total_files") or fields.get("total_folders"):
-            lines.append(f"文件数：{fields['total_files']} 文件夹数：{fields['total_folders']}")
+            lines.append(f"📊 文件数：{fields['total_files']} 📁 文件夹数：{fields['total_folders']}")
         if fields.get("error"):
-            lines.append(f"错误：{fields['error']}")
+            lines.append(f"⚠️ 错误：{fields['error']}")
         return "\n\n".join(lines)
 
     def _notify_completed(self, svc_name: str, task_type: str, success: bool, detail: str, mtype: NotificationType):

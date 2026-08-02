@@ -22,7 +22,7 @@ class OpenListTaskMonitor(_PluginBase):
     plugin_name = "OpenList Task Monitor"
     plugin_desc = "监控 OpenList 复制、上传、离线下载等任务状态，完成或失败时发送通知。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlisttaskmonitor_"
@@ -709,28 +709,28 @@ class OpenListTaskMonitor(_PluginBase):
         lines = []
         if parsed:
             file_name = parsed["src_path"].rstrip("/").split("/")[-1] or "-"
-            lines.append(f"文件：{file_name}")
+            lines.append(f"📄 文件：{file_name}")
             src = parsed["src_path"]
             if parsed["src_label"] and not src.startswith(parsed["src_label"].rstrip("/") + "/") and src != parsed["src_label"].rstrip("/"):
                 src = f"{parsed['src_label'].rstrip('/')}{src}"
-            lines.append(f"源：{src}")
+            lines.append(f"📂 源：{src}")
             dst = parsed["dst_path"]
             if dst:
                 if parsed["dst_label"] and not dst.startswith(parsed["dst_label"].rstrip("/") + "/") and dst != parsed["dst_label"].rstrip("/"):
                     dst = f"{parsed['dst_label'].rstrip('/')}{dst}"
-                lines.append(f"目标：{dst}")
+                lines.append(f"📁 目标：{dst}")
         else:
-            lines.append(f"任务：{task_name}")
+            lines.append(f"📋 任务：{task_name}")
         if success:
             if fields.get("size"):
-                lines.append(f"大小：{fields['size']}")
+                lines.append(f"💾 大小：{fields['size']}")
             if fields.get("duration"):
-                lines.append(f"耗时：{fields['duration']}")
+                lines.append(f"⏱️ 耗时：{fields['duration']}")
         else:
-            lines.append(f"错误：{fields.get('error') or '未知错误'}")
+            lines.append(f"⚠️ 错误：{fields.get('error') or '未知错误'}")
             start_time = fields.get("start_time") or ""
-            lines.append(f"开始时间：{self._format_time(start_time)}")
-        lines.append(f"创建者：{fields.get('creator') or '-'}")
+            lines.append(f"🕐 开始时间：{self._format_time(start_time)}")
+        lines.append(f"👤 创建者：{fields.get('creator') or '-'}")
         return "\n\n".join(lines)
 
     @staticmethod
