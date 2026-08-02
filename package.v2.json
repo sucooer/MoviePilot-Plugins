@@ -154,13 +154,14 @@
     "name": "CloudDrive2 Task Monitor",
     "description": "监控 CloudDrive2 复制/移动任务状态，完成或失败时发送通知。",
     "labels": "CloudDrive2,任务监控,通知",
-    "version": "1.0.2",
-    "icon": "https://www.clouddrive2.com/favicon.ico",
+    "version": "1.0.3",
+    "icon": "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/Cloudrive_A.png",
     "author": "sucooer",
     "level": 1,
     "release": false,
     "system_version": ">=2.12.0",
     "history": {
+      "v1.0.3": "修复任务在运行中即被记录为已通知导致完成时漏通知的问题，仅在任务达到终态后记录。",
       "v1.0.2": "优化通知模板，任务信息分列展示（文件/源/目标/大小/耗时），标题带完成或失败标记。",
       "v1.0.1": "修复任务在运行中即被记录为已通知导致完成时漏通知的问题，仅在任务达到终态后记录。",
       "v1.0.0": "初始化插件，支持 CloudDrive2 复制/移动任务监控通知。"

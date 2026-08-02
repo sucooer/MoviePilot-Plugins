@@ -42,8 +42,8 @@ def _install_deps():
 class CloudDrive2TaskMonitor(_PluginBase):
     plugin_name = "CloudDrive2 Task Monitor"
     plugin_desc = "监控 CloudDrive2 复制/移动任务状态，完成或失败时发送通知。"
-    plugin_icon = "https://www.clouddrive2.com/favicon.ico"
-    plugin_version = "1.0.2"
+    plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/Cloudrive_A.png"
+    plugin_version = "1.0.3"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "clouddrive2taskmonitor_"
