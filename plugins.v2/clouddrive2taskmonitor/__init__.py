@@ -43,7 +43,7 @@ class CloudDrive2TaskMonitor(_PluginBase):
     plugin_name = "CloudDrive2 Task Monitor"
     plugin_desc = "监控 CloudDrive2 复制/移动任务状态，完成或失败时发送通知。"
     plugin_icon = "https://www.clouddrive2.com/favicon.ico"
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "clouddrive2taskmonitor_"
@@ -465,8 +465,12 @@ class CloudDrive2TaskMonitor(_PluginBase):
                                 duration_str = self._calc_duration(task.startTime, task.endTime)
                                 size_str = self._format_bytes(total_bytes)
                                 self._notify_completed(
-                                    svc_name, mode_label,
-                                    f"{task.sourcePath}\n目标：{task.destPath}\n大小：{size_str}\n耗时：{duration_str}\n文件：{total_files} 文件夹：{total_folders}",
+                                    svc_name, mode_label, True,
+                                    self._build_notify_detail(
+                                        source=task.sourcePath, dest=task.destPath,
+                                        size=size_str, duration=duration_str,
+                                        total_files=total_files, total_folders=total_folders,
+                                    ),
                                     NotificationType.SiteMessage,
                                 )
                                 stats["notify_success"] += 1
@@ -476,8 +480,11 @@ class CloudDrive2TaskMonitor(_PluginBase):
                             if self._notify:
                                 error_msgs = [e.message for e in task.errors] if task.errors else ["未知错误"]
                                 self._notify_completed(
-                                    svc_name, mode_label,
-                                    f"{task.sourcePath}\n目标：{task.destPath}\n错误：{'；'.join(error_msgs)}",
+                                    svc_name, mode_label, False,
+                                    self._build_notify_detail(
+                                        source=task.sourcePath, dest=task.destPath,
+                                        error="；".join(error_msgs),
+                                    ),
                                     NotificationType.SiteMessage,
                                 )
                                 stats["notify_failed"] += 1
@@ -524,8 +531,25 @@ class CloudDrive2TaskMonitor(_PluginBase):
             for k in sorted_keys[:len(sorted_keys) - self.MAX_NOTIFIED_KEYS]:
                 del notified[k]
 
-    def _notify_completed(self, svc_name: str, task_type: str, detail: str, mtype: NotificationType):
-        title = f"【CloudDrive2 Task Monitor】{svc_name} - {task_type}"
+    def _build_notify_detail(self, source: str, dest: str, **fields) -> str:
+        lines = []
+        file_name = source.rstrip("/").split("/")[-1] if source else "-"
+        lines.append(f"文件：{file_name}")
+        lines.append(f"源：{source}")
+        lines.append(f"目标：{dest}")
+        if fields.get("size"):
+            lines.append(f"大小：{fields['size']}")
+        if fields.get("duration"):
+            lines.append(f"耗时：{fields['duration']}")
+        if fields.get("total_files") or fields.get("total_folders"):
+            lines.append(f"文件数：{fields['total_files']} 文件夹数：{fields['total_folders']}")
+        if fields.get("error"):
+            lines.append(f"错误：{fields['error']}")
+        return "\n".join(lines)
+
+    def _notify_completed(self, svc_name: str, task_type: str, success: bool, detail: str, mtype: NotificationType):
+        marker = "✅" if success else "❌"
+        title = f"{marker} {task_type}完成 - {svc_name}" if success else f"{marker} {task_type}失败 - {svc_name}"
         try:
             self.post_message(mtype=mtype, title=title, text=detail)
         except Exception as e:

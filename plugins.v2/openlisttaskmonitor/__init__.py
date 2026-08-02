@@ -1,3 +1,4 @@
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -21,7 +22,7 @@ class OpenListTaskMonitor(_PluginBase):
     plugin_name = "OpenList Task Monitor"
     plugin_desc = "监控 OpenList 复制、上传、离线下载等任务状态，完成或失败时发送通知。"
     plugin_icon = "https://raw.githubusercontent.com/sucooer/MoviePilot-Plugins/main/icons/OpenList.png"
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     plugin_author = "sucooer"
     author_url = "https://github.com/sucooer/MoviePilot-Plugins"
     plugin_config_prefix = "openlisttaskmonitor_"
@@ -529,16 +530,20 @@ class OpenListTaskMonitor(_PluginBase):
                             else:
                                 size_str = self._format_bytes(total_bytes)
                                 self._notify_completed(
-                                    svc_name, type_label,
-                                    f"{task_name}\n大小：{size_str}\n耗时：{duration_str}\n创建者：{creator or '-'}",
+                                    svc_name, type_label, True,
+                                    self._build_notify_detail(task_name, success=True,
+                                                              size=size_str, duration=duration_str,
+                                                              creator=creator),
                                     NotificationType.SiteMessage,
                                 )
                                 stats["notify_success"] += 1
 
                         elif state in (5, 7) and self._notify_failed and self._notify:
                             self._notify_completed(
-                                svc_name, type_label,
-                                f"{task_name}\n错误：{error_msg or '未知错误'}\n开始时间：{start_time or '-'}\n创建者：{creator or '-'}",
+                                svc_name, type_label, False,
+                                self._build_notify_detail(task_name, success=False,
+                                                          error=error_msg, start_time=start_time,
+                                                          creator=creator),
                                 NotificationType.SiteMessage,
                             )
                             stats["notify_failed"] += 1
@@ -688,6 +693,56 @@ class OpenListTaskMonitor(_PluginBase):
                 del notified[svc_name]
 
     @staticmethod
+    def _parse_task_name(task_name: str) -> Optional[Dict[str, str]]:
+        m = re.match(r"^[a-z_]+\s*\[([^\]]*)\]\(([^)]*)\)(?:\s*to\s*\[([^\]]*)\]\(([^)]*)\))?$", task_name.strip())
+        if not m:
+            return None
+        return {
+            "src_label": m.group(1).strip(),
+            "src_path": m.group(2).strip(),
+            "dst_label": (m.group(3) or "").strip(),
+            "dst_path": (m.group(4) or "").strip(),
+        }
+
+    def _build_notify_detail(self, task_name: str, success: bool, **fields) -> str:
+        parsed = self._parse_task_name(task_name)
+        lines = []
+        if parsed:
+            file_name = parsed["src_path"].rstrip("/").split("/")[-1] or "-"
+            lines.append(f"文件：{file_name}")
+            src = parsed["src_path"]
+            if parsed["src_label"] and not src.startswith(parsed["src_label"].rstrip("/") + "/") and src != parsed["src_label"].rstrip("/"):
+                src = f"{parsed['src_label'].rstrip('/')}{src}"
+            lines.append(f"源：{src}")
+            dst = parsed["dst_path"]
+            if dst:
+                if parsed["dst_label"] and not dst.startswith(parsed["dst_label"].rstrip("/") + "/") and dst != parsed["dst_label"].rstrip("/"):
+                    dst = f"{parsed['dst_label'].rstrip('/')}{dst}"
+                lines.append(f"目标：{dst}")
+        else:
+            lines.append(f"任务：{task_name}")
+        if success:
+            if fields.get("size"):
+                lines.append(f"大小：{fields['size']}")
+            if fields.get("duration"):
+                lines.append(f"耗时：{fields['duration']}")
+        else:
+            lines.append(f"错误：{fields.get('error') or '未知错误'}")
+            start_time = fields.get("start_time") or ""
+            lines.append(f"开始时间：{self._format_time(start_time)}")
+        lines.append(f"创建者：{fields.get('creator') or '-'}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_time(value: str) -> str:
+        if not value:
+            return "-"
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            return value
+
+    @staticmethod
     def _calc_duration(start_time: str, end_time: str) -> str:
         if not start_time or not end_time:
             return "-"
@@ -755,8 +810,9 @@ class OpenListTaskMonitor(_PluginBase):
             })
         return rows
 
-    def _notify_completed(self, svc_name: str, task_type: str, detail: str, mtype: NotificationType):
-        title = f"【OpenList Task Monitor】{svc_name} - {task_type}"
+    def _notify_completed(self, svc_name: str, task_type: str, success: bool, detail: str, mtype: NotificationType):
+        marker = "✅" if success else "❌"
+        title = f"{marker} {task_type}完成 - {svc_name}" if success else f"{marker} {task_type}失败 - {svc_name}"
         try:
             self.post_message(mtype=mtype, title=title, text=detail)
         except Exception as e:
